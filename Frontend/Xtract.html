@@ -271,6 +271,7 @@
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin></script>
 <script type="text/babel">
+const API_BASE = 'https://xtract.onrender.com';
 const { useState, useEffect, useRef, useCallback } = React;
 
 /* ─── Icons ─── */
@@ -470,7 +471,7 @@ function PageDashboard({ navigate, toast }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/jobs').then(r => r.json()).then(d => { setJobs(d); setLoading(false); }).catch(() => setLoading(false));
+    fetch(`${API_BASE}/jobs`).then(r => r.json()).then(d => { setJobs(d); setLoading(false); }).catch(() => setLoading(false));
   }, []);
 
   const totalFiles  = jobs.reduce((s, j) => s + (j.total_files || 0), 0);
@@ -646,7 +647,7 @@ function PageUpload({ navigate, toast }) {
     try {
       const fd = new FormData();
       files.forEach(f => fd.append('files', f));
-      const res = await fetch('/upload', { method:'POST', body:fd });
+      const res = await fetch(`${API_BASE}/upload`, { method:'POST', body:fd });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || 'Upload failed');
@@ -766,7 +767,7 @@ function PageProcessing({ navigate, toast, jobId, uploadedFiles }) {
 
     const poll = async () => {
       try {
-        const res = await fetch(`/status/${jobId}`);
+        const res = await fetch(`${API_BASE}/status/${jobId}`);
         if (res.ok) {
           const d = await res.json();
           setStatus(d);
@@ -816,7 +817,7 @@ function PageProcessing({ navigate, toast, jobId, uploadedFiles }) {
         </div>
         {isDone && (
           <div className="row gap-2">
-            <button className="btn btn-secondary" onClick={() => window.open(`/download/${jobId}`)}>
+            <button className="btn btn-secondary" onClick={() => window.open(`${API_BASE}/download/${jobId}`)}>
               <Ic.download style={{ width:14,height:14 }} /> Download Excel
             </button>
             <button className="btn btn-primary btn-lg" onClick={() => navigate('extractions', { jobId })}>
@@ -899,7 +900,7 @@ function PageExtractions({ navigate, toast, highlightJobId }) {
   const [search, setSearch] = useState('');
 
   useEffect(() => {
-    fetch('/jobs').then(r => r.json()).then(d => {
+    fetch(`${API_BASE}/jobs`).then(r => r.json()).then(d => {
       setJobs(d);
       setLoadingJobs(false);
       if (highlightJobId) {
@@ -913,7 +914,7 @@ function PageExtractions({ navigate, toast, highlightJobId }) {
     if (invoices[jid] || loadingInv[jid]) return;
     setLoadingInv(prev => ({ ...prev, [jid]: true }));
     try {
-      const res = await fetch(`/jobs/${jid}/invoices`);
+      const res = await fetch(`${API_BASE}/jobs/${jid}/invoices`);
       const data = await res.json();
       setInvoices(prev => ({ ...prev, [jid]: data }));
     } catch {}
@@ -976,7 +977,7 @@ function PageExtractions({ navigate, toast, highlightJobId }) {
               <div className="row gap-3">
                 <span className="text-mono muted" style={{ fontSize:12 }}>{job.id.slice(0,8)}…</span>
                 {job.excel_ready && (
-                  <button className="btn btn-secondary btn-sm" onClick={e => { e.stopPropagation(); window.open(`/download/${job.id}`); }}>
+                  <button className="btn btn-secondary btn-sm" onClick={e => { e.stopPropagation(); window.open(`${API_BASE}/download/${job.id}`); }}>
                     <Ic.download style={{ width:13,height:13 }} /> Excel
                   </button>
                 )}
@@ -1036,7 +1037,7 @@ function PageDetail({ navigate, toast, invoiceId, jobId: propJobId }) {
 
   useEffect(() => {
     if (!invoiceId) { navigate('extractions'); return; }
-    fetch(`/invoices/${invoiceId}`)
+    fetch(`${API_BASE}/invoices/${invoiceId}`)
       .then(r => r.json())
       .then(d => { setInv(d); setLoading(false); })
       .catch(() => setLoading(false));
@@ -1097,7 +1098,7 @@ function PageDetail({ navigate, toast, invoiceId, jobId: propJobId }) {
         <div className="row gap-2">
           <StatusBadge status={inv.status} />
           {jid && (
-            <button className="btn btn-primary" onClick={() => window.open(`/download/${jid}`)}>
+            <button className="btn btn-primary" onClick={() => window.open(`${API_BASE}/download/${jid}`)}>
               <Ic.download style={{ width:14,height:14 }} /> Download Excel
             </button>
           )}
@@ -1272,7 +1273,7 @@ function PageDetail({ navigate, toast, invoiceId, jobId: propJobId }) {
             <h3>Actions</h3>
             <div style={{ display:'flex',flexDirection:'column',gap:8 }}>
               {jid && (
-                <button className="btn btn-primary" style={{ width:'100%',justifyContent:'center' }} onClick={() => window.open(`/download/${jid}`)}>
+                <button className="btn btn-primary" style={{ width:'100%',justifyContent:'center' }} onClick={() => window.open(`${API_BASE}/download/${jid}`)}>
                   <Ic.download style={{ width:14,height:14 }} /> Download Excel
                 </button>
               )}
