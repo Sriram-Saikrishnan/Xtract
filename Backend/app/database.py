@@ -83,7 +83,7 @@ class InvoiceORM(Base):
     round_off = Column(Float, default=0.0)
     grand_total = Column(Float, default=0.0)
     total_weight_kg = Column(Float, default=0.0)
-    total_qty = Column(Integer, default=0)
+    total_qty = Column(Float, default=0.0)
     confidence_score = Column(Float, default=0.0)
     status = Column(String(50), default="VERIFIED")
     flags = Column(Text, default="")

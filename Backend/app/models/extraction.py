@@ -50,6 +50,6 @@ class GeminiExtractionResult(BaseModel):
     round_off: Optional[float] = 0.0
     grand_total: Optional[float] = 0.0
     total_weight_kg: Optional[float] = 0.0
-    total_qty: Optional[int] = 0
+    total_qty: Optional[float] = 0.0
     confidence_score: Optional[float] = 0.8
     line_items: List[GeminiLineItem] = []
