@@ -32,8 +32,8 @@ async def build_excel(job_id: str) -> Path:
     wb.remove(wb.active)
 
     sheet_line_items.build_sheet(wb, invoices)
-    sheet_summary.build_sheet(wb, invoices)
     sheet_gst.build_sheet(wb, invoices)
+    sheet_summary.build_sheet(wb, invoices)
     sheet_flagged.build_sheet(wb, invoices)
 
     wb.save(str(output_path))
