@@ -10,7 +10,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.pool import NullPool
+from sqlalchemy.exc import OperationalError, DBAPIError
 
 from app.config import settings
 
@@ -25,27 +25,43 @@ def _async_url(url: str) -> str:
     return url
 
 
+# Persistent pool instead of NullPool.
+#
+# NullPool creates a new TCP+SSL connection per request. On Render→Supabase Mumbai,
+# that's ~300-500ms per request plus uvloop's Happy Eyeballs algorithm firing
+# CancelledError during SSL setup (visible as TimeoutError in the traceback).
+#
+# A small pool establishes connections ONCE at startup and reuses them:
+#   pool_size=2       — keep 2 live connections
+#   max_overflow=3    — allow up to 5 total under burst load
+#   pool_pre_ping     — verify connection health before each use; reconnect if stale
+#   pool_recycle=280  — recycle before Supabase's ~300s server-side idle timeout
 async_engine = create_async_engine(
     _async_url(settings.DATABASE_URL),
     echo=False,
-    poolclass=NullPool,
+    pool_size=2,
+    max_overflow=3,
+    pool_timeout=30,
+    pool_recycle=280,
+    pool_pre_ping=True,
     connect_args={
         "ssl": "require",
         "timeout": 60,
         "command_timeout": 60,
-        # Required for Supabase PgBouncer (port 6543, transaction mode):
-        # PgBouncer does not support prepared statements, so asyncpg's cache must be disabled.
+        # PgBouncer transaction mode (port 6543) does not support prepared statements.
         "prepared_statement_cache_size": 0,
         "statement_cache_size": 0,
     },
 )
 
-
-_TRANSIENT_EXC = (asyncio.TimeoutError, TimeoutError, OSError)
+# Exceptions that indicate a transient connection failure worth retrying.
+# OperationalError / DBAPIError cover SQLAlchemy-wrapped pool-checkout failures
+# (e.g. when pool_pre_ping triggers a reconnect that also fails transiently).
+_TRANSIENT_EXC = (asyncio.TimeoutError, TimeoutError, OSError, OperationalError, DBAPIError)
 
 
 def db_retry(retries: int = 3, backoff: float = 1.0):
-    """Retry a route handler on transient DB connection errors (cold-start / pooler timeouts)."""
+    """Retry a route handler on transient DB connection errors."""
     def decorator(fn):
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
@@ -172,9 +188,19 @@ class GeminiQuotaORM(Base):
     )
 
 
-async def init_db():
-    async with async_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+async def init_db(retries: int = 5, backoff: float = 2.0):
+    """Create tables on startup. Retries so a slow Render cold-start doesn't abort launch."""
+    for attempt in range(retries):
+        try:
+            async with async_engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            return
+        except Exception as exc:
+            if attempt == retries - 1:
+                raise
+            wait = backoff * (2 ** attempt)
+            logger.warning("init_db attempt %d/%d failed, retrying in %.0fs: %s", attempt + 1, retries, wait, exc)
+            await asyncio.sleep(wait)
 
 
 async def get_db() -> AsyncSession:
