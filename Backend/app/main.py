@@ -71,17 +71,27 @@ async def health():
 @db_retry()
 async def delete_job(job_id: str):
     import uuid
+    from pathlib import Path
     from app.database import AsyncSessionLocal, JobORM
     from app.core.job_store import job_store
 
+    excel_path = None
     try:
         async with AsyncSessionLocal() as session:
             job = await session.get(JobORM, uuid.UUID(job_id))
             if job:
+                excel_path = job.excel_path
                 await session.delete(job)
                 await session.commit()
     except Exception as e:
-        logger.error(f"Delete job {job_id} failed: {e}")
+        logger.error(f"Delete job {job_id} DB error: {e}")
 
     job_store.delete(job_id)
+
+    if excel_path:
+        try:
+            Path(excel_path).unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning(f"Could not remove excel file {excel_path}: {e}")
+
     return {"deleted": job_id}

@@ -263,6 +263,14 @@
     .empty-icon{width:56px;height:56px;border-radius:14px;background:var(--surface);display:grid;place-items:center;margin:0 auto 14px;color:var(--text-3);}
     .line-chart-wrap{padding:4px 12px 12px;}
     .loading{display:flex;align-items:center;justify-content:center;padding:48px;color:var(--text-3);gap:10px;}
+    /* Delete confirm modal */
+    .modal-overlay{position:fixed;inset:0;background:rgba(20,22,15,0.42);backdrop-filter:blur(3px);display:grid;place-items:center;z-index:200;padding:20px;animation:fadeIn 0.15s ease;}
+    .modal{background:var(--bg);border:0.5px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-lift),0 20px 64px rgba(20,22,15,0.18);width:100%;max-width:420px;padding:28px;animation:modalIn 0.2s cubic-bezier(0.34,1.3,0.64,1);}
+    @keyframes fadeIn{from{opacity:0;}}
+    @keyframes modalIn{from{transform:translateY(-10px) scale(0.97);opacity:0;}}
+    /* Row-level delete button: fade in on row hover */
+    .tbl tbody tr .row-del{opacity:0;transition:opacity 0.15s ease;}
+    .tbl tbody tr:hover .row-del{opacity:1;}
   </style>
 </head>
 <body>
@@ -454,6 +462,58 @@ function Toast({ message, onClose }) {
   );
 }
 
+function ConfirmDeleteModal({ job, onConfirm, onCancel, loading }) {
+  if (!job) return null;
+  const extracted = (job.verified_count || 0) + (job.flagged_count || 0) + (job.error_count || 0);
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="row gap-3" style={{ marginBottom:20 }}>
+          <div style={{ width:42,height:42,borderRadius:11,background:'var(--red-soft)',display:'grid',placeItems:'center',flexShrink:0 }}>
+            <Ic.trash style={{ width:18,height:18,color:'var(--red)' }} />
+          </div>
+          <div>
+            <div style={{ fontWeight:700,fontSize:16,letterSpacing:'-0.02em',marginBottom:2 }}>Delete this job?</div>
+            <div style={{ color:'var(--text-3)',fontSize:12.5 }}>This action cannot be undone</div>
+          </div>
+        </div>
+
+        {/* Job detail strip */}
+        <div style={{ background:'var(--surface)',border:'0.5px solid var(--border)',borderRadius:10,padding:'12px 14px',marginBottom:18 }}>
+          {[
+            ['Job ID', <span className="text-mono" style={{ fontSize:12 }}>{job.id.slice(0,8)}…</span>],
+            ['Files uploaded', <span className="text-mono">{job.total_files}</span>],
+            ['Invoices extracted', <span className="text-mono">{extracted}</span>],
+            ['Created', fmtDate(job.created_at)],
+          ].map(([k, v]) => (
+            <div key={k} className="row between" style={{ fontSize:13,marginBottom:6 }}>
+              <span style={{ color:'var(--text-3)' }}>{k}</span>
+              <span>{v}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Warning text */}
+        <p style={{ fontSize:13,color:'var(--text-2)',margin:'0 0 22px',lineHeight:1.6 }}>
+          All extracted invoices, line items, and the Excel report for this job will be permanently deleted.
+          {job.excel_ready ? ' Any report not yet downloaded will be lost.' : ''}
+        </p>
+
+        {/* Actions */}
+        <div className="row gap-2" style={{ justifyContent:'flex-end' }}>
+          <button className="btn btn-ghost" onClick={onCancel} disabled={loading}>Cancel</button>
+          <button className="btn btn-danger" onClick={onConfirm} disabled={loading} style={{ minWidth:120,justifyContent:'center' }}>
+            {loading
+              ? <><span className="spinner" style={{ borderColor:'rgba(255,255,255,0.3)',borderTopColor:'#fff' }}></span> Deleting…</>
+              : <><Ic.trash style={{ width:13,height:13 }} /> Delete job</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function fmt(n) {
   if (n === null || n === undefined) return '—';
   return Number(n).toLocaleString('en-IN', { minimumFractionDigits:2, maximumFractionDigits:2 });
@@ -469,10 +529,28 @@ function fmtDate(iso) {
 function PageDashboard({ navigate, toast }) {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [deleteModal, setDeleteModal] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     fetch(`${API_BASE}/jobs`).then(r => r.json()).then(d => { setJobs(d); setLoading(false); }).catch(() => setLoading(false));
   }, []);
+
+  const handleDelete = async () => {
+    if (!deleteModal) return;
+    setDeleting(true);
+    try {
+      const res = await fetch(`${API_BASE}/job/${deleteModal.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Delete failed');
+      setJobs(prev => prev.filter(j => j.id !== deleteModal.id));
+      setDeleteModal(null);
+      toast('Job deleted');
+    } catch (e) {
+      toast('Error: ' + e.message);
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const totalFiles  = jobs.reduce((s, j) => s + (j.total_files || 0), 0);
   const totalOk     = jobs.reduce((s, j) => s + (j.verified_count || 0), 0);
@@ -549,7 +627,7 @@ function PageDashboard({ navigate, toast }) {
               </div>
             ) : (
               <table className="tbl">
-                <thead><tr><th>Job ID</th><th>Files</th><th>Status</th><th>Verified</th><th>Flagged</th><th>Date</th></tr></thead>
+                <thead><tr><th>Job ID</th><th>Files</th><th>Status</th><th>Verified</th><th>Flagged</th><th>Date</th><th style={{ width:44 }}></th></tr></thead>
                 <tbody>
                   {recentJobs.map(j => (
                     <tr key={j.id} onClick={() => navigate('extractions', { jobId: j.id })}>
@@ -559,6 +637,16 @@ function PageDashboard({ navigate, toast }) {
                       <td className="text-mono" style={{ color:'var(--green)',fontWeight:700 }}>{j.verified_count}</td>
                       <td className="text-mono" style={{ color:'var(--amber)' }}>{j.flagged_count}</td>
                       <td className="muted" style={{ fontSize:12.5 }}>{fmtDate(j.created_at)}</td>
+                      <td style={{ padding:'0 10px' }}>
+                        <button
+                          className="icon-btn row-del"
+                          style={{ width:28,height:28,borderRadius:7,color:'var(--text-3)' }}
+                          title="Delete job"
+                          onClick={e => { e.stopPropagation(); setDeleteModal(j); }}
+                        >
+                          <Ic.trash style={{ width:13,height:13 }} />
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -613,6 +701,13 @@ function PageDashboard({ navigate, toast }) {
           </div>
         </div>
       </div>
+
+      <ConfirmDeleteModal
+        job={deleteModal}
+        onConfirm={handleDelete}
+        onCancel={() => !deleting && setDeleteModal(null)}
+        loading={deleting}
+      />
     </div>
   );
 }
@@ -898,6 +993,8 @@ function PageExtractions({ navigate, toast, highlightJobId }) {
   const [loadingJobs, setLoadingJobs] = useState(true);
   const [loadingInv, setLoadingInv] = useState({});
   const [search, setSearch] = useState('');
+  const [deleteModal, setDeleteModal] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     fetch(`${API_BASE}/jobs`).then(r => r.json()).then(d => {
@@ -925,6 +1022,24 @@ function PageExtractions({ navigate, toast, highlightJobId }) {
     const isOpen = expanded[jid];
     setExpanded(prev => ({ ...prev, [jid]: !isOpen }));
     if (!isOpen) fetchInvoices(jid);
+  };
+
+  const handleDelete = async () => {
+    if (!deleteModal) return;
+    setDeleting(true);
+    try {
+      const res = await fetch(`${API_BASE}/job/${deleteModal.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Delete failed');
+      setJobs(prev => prev.filter(j => j.id !== deleteModal.id));
+      setInvoices(prev => { const n = { ...prev }; delete n[deleteModal.id]; return n; });
+      setExpanded(prev => { const n = { ...prev }; delete n[deleteModal.id]; return n; });
+      setDeleteModal(null);
+      toast('Job deleted');
+    } catch (e) {
+      toast('Error: ' + e.message);
+    } finally {
+      setDeleting(false);
+    }
   };
 
   return (
@@ -974,13 +1089,21 @@ function PageExtractions({ navigate, toast, highlightJobId }) {
                 {job.verified_count > 0 && <span className="badge badge-green">{job.verified_count} verified</span>}
                 {job.flagged_count > 0 && <span className="badge badge-amber">{job.flagged_count} flagged</span>}
               </div>
-              <div className="row gap-3">
+              <div className="row gap-2">
                 <span className="text-mono muted" style={{ fontSize:12 }}>{job.id.slice(0,8)}…</span>
                 {job.excel_ready && (
                   <button className="btn btn-secondary btn-sm" onClick={e => { e.stopPropagation(); window.open(`${API_BASE}/download/${job.id}`); }}>
                     <Ic.download style={{ width:13,height:13 }} /> Excel
                   </button>
                 )}
+                <button
+                  className="btn btn-ghost btn-sm"
+                  style={{ color:'var(--text-3)',padding:'5px 8px',borderRadius:8 }}
+                  title="Delete job"
+                  onClick={e => { e.stopPropagation(); setDeleteModal(job); }}
+                >
+                  <Ic.trash style={{ width:13,height:13 }} />
+                </button>
               </div>
             </div>
 
@@ -1026,6 +1149,13 @@ function PageExtractions({ navigate, toast, highlightJobId }) {
           </div>
         );
       })}
+
+      <ConfirmDeleteModal
+        job={deleteModal}
+        onConfirm={handleDelete}
+        onCancel={() => !deleting && setDeleteModal(null)}
+        loading={deleting}
+      />
     </div>
   );
 }
