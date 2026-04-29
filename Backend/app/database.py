@@ -1,3 +1,6 @@
+import asyncio
+import functools
+import logging
 import uuid
 from datetime import datetime
 from sqlalchemy import (
@@ -7,9 +10,11 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.pool import NullPool  # add this import at the top
+from sqlalchemy.pool import NullPool
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _async_url(url: str) -> str:
@@ -26,10 +31,40 @@ async_engine = create_async_engine(
     poolclass=NullPool,
     connect_args={
         "ssl": "require",
-        "timeout": 30,
+        "timeout": 60,
         "command_timeout": 60,
+        # Required for Supabase PgBouncer (port 6543, transaction mode):
+        # PgBouncer does not support prepared statements, so asyncpg's cache must be disabled.
+        "prepared_statement_cache_size": 0,
+        "statement_cache_size": 0,
     },
 )
+
+
+_TRANSIENT_EXC = (asyncio.TimeoutError, TimeoutError, OSError)
+
+
+def db_retry(retries: int = 3, backoff: float = 1.0):
+    """Retry a route handler on transient DB connection errors (cold-start / pooler timeouts)."""
+    def decorator(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            last_exc: BaseException = RuntimeError("unreachable")
+            for attempt in range(retries):
+                try:
+                    return await fn(*args, **kwargs)
+                except _TRANSIENT_EXC as exc:
+                    last_exc = exc
+                    if attempt < retries - 1:
+                        wait = backoff * (2 ** attempt)
+                        logger.warning(
+                            "DB transient error on attempt %d/%d, retrying in %.1fs: %s",
+                            attempt + 1, retries, wait, exc,
+                        )
+                        await asyncio.sleep(wait)
+            raise last_exc
+        return wrapper
+    return decorator
 
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False, class_=AsyncSession)
 

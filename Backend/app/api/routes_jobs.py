@@ -3,13 +3,14 @@ import logging
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
-from app.database import AsyncSessionLocal, JobORM, InvoiceORM, LineItemORM
+from app.database import AsyncSessionLocal, JobORM, InvoiceORM, LineItemORM, db_retry
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Jobs"])
 
 
 @router.get("/jobs")
+@db_retry()
 async def list_jobs():
     async with AsyncSessionLocal() as session:
         result = await session.execute(
@@ -34,6 +35,7 @@ async def list_jobs():
 
 
 @router.get("/jobs/{job_id}/invoices")
+@db_retry()
 async def list_job_invoices(job_id: str):
     async with AsyncSessionLocal() as session:
         result = await session.execute(
@@ -65,6 +67,7 @@ async def list_job_invoices(job_id: str):
 
 
 @router.get("/invoices/{invoice_id}")
+@db_retry()
 async def get_invoice(invoice_id: str):
     async with AsyncSessionLocal() as session:
         inv = await session.get(InvoiceORM, uuid.UUID(invoice_id))

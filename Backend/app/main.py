@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 
 from app.config import settings
 from app.core.file_cleaner import start_scheduler, stop_scheduler
-from app.database import init_db
+from app.database import init_db, db_retry
 from app.api import routes_upload, routes_status, routes_download, routes_review, routes_quota, routes_jobs
 
 logging.basicConfig(
@@ -68,6 +68,7 @@ async def health():
 
 
 @app.delete("/job/{job_id}", tags=["Jobs"])
+@db_retry()
 async def delete_job(job_id: str):
     import uuid
     from app.database import AsyncSessionLocal, JobORM
