@@ -7,6 +7,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.pool import NullPool  # add this import at the top
 
 from app.config import settings
 
@@ -19,7 +20,17 @@ def _async_url(url: str) -> str:
     return url
 
 
-async_engine = create_async_engine(_async_url(settings.DATABASE_URL), echo=False)
+async_engine = create_async_engine(
+    _async_url(settings.DATABASE_URL),
+    echo=False,
+    poolclass=NullPool,
+    connect_args={
+        "ssl": "require",
+        "timeout": 30,
+        "command_timeout": 60,
+    },
+)
+
 AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False, class_=AsyncSession)
 
 Base = declarative_base()
