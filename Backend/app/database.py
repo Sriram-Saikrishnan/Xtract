@@ -12,6 +12,8 @@ from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.exc import OperationalError, DBAPIError
 
+from sqlalchemy.pool import NullPool
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -25,38 +27,39 @@ def _async_url(url: str) -> str:
     return url
 
 
-# Persistent pool instead of NullPool.
+# NullPool — no SQLAlchemy connection pool.
 #
-# NullPool creates a new TCP+SSL connection per request. On Render→Supabase Mumbai,
-# that's ~300-500ms per request plus uvloop's Happy Eyeballs algorithm firing
-# CancelledError during SSL setup (visible as TimeoutError in the traceback).
+# The DATABASE_URL points to Supabase's PgBouncer at port 6543 (transaction mode).
+# PgBouncer transaction mode is ALREADY a connection pool: it assigns a backend
+# PostgreSQL connection only for the duration of one transaction, then releases it.
+# Idle client sockets are silently dropped by NAT/firewall or PgBouncer itself.
 #
-# A small pool establishes connections ONCE at startup and reuses them:
-#   pool_size=2       — keep 2 live connections
-#   max_overflow=3    — allow up to 5 total under burst load
-#   pool_pre_ping     — verify connection health before each use; reconnect if stale
-#   pool_recycle=280  — recycle before Supabase's ~300s server-side idle timeout
+# Running SQLAlchemy's persistent pool on top of PgBouncer creates a "pool-of-pools"
+# where SQLAlchemy thinks connections are alive but they are dead at the network level.
+# pool_pre_ping then waits up to command_timeout (was 60s) per dead connection before
+# giving up — causing 2+ minute hangs on the first request after any idle period.
+#
+# NullPool gives each request a fresh connection to PgBouncer. PgBouncer reuses its
+# own backend PostgreSQL connections, so there is no wasted DB work. The overhead is
+# one TCP+SSL handshake per request (~100-200ms Render→Mumbai), which is far better
+# than 2-minute hangs from stale persistent pool connections.
 async_engine = create_async_engine(
     _async_url(settings.DATABASE_URL),
     echo=False,
-    pool_size=2,
-    max_overflow=3,
-    pool_timeout=30,
-    pool_recycle=280,
-    pool_pre_ping=True,
+    poolclass=NullPool,
     connect_args={
         "ssl": "require",
-        "timeout": 60,
-        "command_timeout": 60,
-        # PgBouncer transaction mode (port 6543) does not support prepared statements.
+        "timeout": 10,
+        "command_timeout": 10,
+        # PgBouncer transaction mode does not support prepared statements.
         "prepared_statement_cache_size": 0,
         "statement_cache_size": 0,
     },
 )
 
 # Exceptions that indicate a transient connection failure worth retrying.
-# OperationalError / DBAPIError cover SQLAlchemy-wrapped pool-checkout failures
-# (e.g. when pool_pre_ping triggers a reconnect that also fails transiently).
+# With NullPool each request gets a fresh connection, so these are rare
+# but can still occur on Supabase cold-start or transient network glitches.
 _TRANSIENT_EXC = (asyncio.TimeoutError, TimeoutError, OSError, OperationalError, DBAPIError)
 
 
