@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
 import { Ic } from '../components/icons';
 import FileIcon from '../components/FileIcon';
-import { API_BASE } from '../utils/formatters';
+import { apiFetch } from '../utils/formatters';
 
 export default function Upload({ navigate, toast }) {
   const [files, setFiles] = useState([]);
@@ -32,7 +32,7 @@ export default function Upload({ navigate, toast }) {
     try {
       const fd = new FormData();
       files.forEach(f => fd.append('files', f));
-      const res = await fetch(`${API_BASE}/upload`, { method: 'POST', body: fd });
+      const res = await apiFetch('/upload', { method: 'POST', body: fd });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || 'Upload failed');

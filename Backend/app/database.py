@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Float, Integer, DateTime,
-    ForeignKey, Text, UniqueConstraint
+    ForeignKey, Text, UniqueConstraint, text
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, relationship
@@ -90,10 +90,23 @@ AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False, cla
 Base = declarative_base()
 
 
+class UserORM(Base):
+    __tablename__ = "users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    full_name = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    jobs = relationship("JobORM", back_populates="owner", cascade="all, delete-orphan")
+
+
 class JobORM(Base):
     __tablename__ = "jobs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     status = Column(String(50), nullable=False, default="queued")
     total_files = Column(Integer, default=0)
     processed_files = Column(Integer, default=0)
@@ -104,6 +117,7 @@ class JobORM(Base):
     completed_at = Column(DateTime, nullable=True)
     excel_path = Column(String(512), nullable=True)
 
+    owner = relationship("UserORM", back_populates="jobs")
     invoices = relationship("InvoiceORM", back_populates="job", cascade="all, delete-orphan")
 
 
@@ -192,11 +206,17 @@ class GeminiQuotaORM(Base):
 
 
 async def init_db(retries: int = 5, backoff: float = 2.0):
-    """Create tables on startup. Retries so a slow Render cold-start doesn't abort launch."""
+    """Create all tables, then run idempotent column migration for pre-auth deployments."""
     for attempt in range(retries):
         try:
             async with async_engine.begin() as conn:
+                # Creates users table (new) and any other missing tables.
+                # Skips tables that already exist (checkfirst=True by default).
                 await conn.run_sync(Base.metadata.create_all)
+                # Add user_id to jobs table for deployments that existed before auth was added.
+                await conn.execute(text(
+                    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS user_id UUID"
+                ))
             return
         except Exception as exc:
             if attempt == retries - 1:

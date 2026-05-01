@@ -1,8 +1,35 @@
 import { useState } from 'react';
 import { Ic } from '../components/icons';
+import { useAuth } from '../context/AuthContext';
+import { apiFetch } from '../utils/formatters';
 
 export default function Profile({ navigate, toast }) {
+  const { user, logout, updateUser } = useAuth();
+  const [name, setName] = useState(user?.name || '');
+  const [saving, setSaving] = useState(false);
   const [prefs, setPrefs] = useState({ threshold: 85, emailComplete: true, emailFail: true, weeklyDigest: false });
+
+  const initials = user?.name
+    ? user.name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)
+    : (user?.email?.[0] || 'U').toUpperCase();
+
+  const saveProfile = async () => {
+    setSaving(true);
+    try {
+      const res = await apiFetch('/auth/profile', {
+        method: 'PATCH',
+        body: JSON.stringify({ name }),
+      });
+      if (!res.ok) throw new Error('Save failed');
+      const updated = await res.json();
+      updateUser(updated);
+      toast('Profile saved');
+    } catch (e) {
+      toast('Error: ' + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="page profile-page">
@@ -14,25 +41,30 @@ export default function Profile({ navigate, toast }) {
       </div>
 
       <div className="card profile-hero mb-3">
-        <div className="avatar-lg">U</div>
+        <div className="avatar-lg">{initials}</div>
         <div className="profile-hero-info">
-          <h2>Xtract User</h2>
-          <div className="meta">admin@xtract.app · <span className="badge badge-green" style={{ verticalAlign: 'middle' }}>Admin</span></div>
+          <h2>{user?.name || user?.email || 'Xtract User'}</h2>
+          <div className="meta">{user?.email}</div>
         </div>
-        <button className="btn btn-secondary"><Ic.edit style={{ width: 14, height: 14 }} />Edit profile</button>
       </div>
 
       <div className="card section mb-3">
         <h3>Personal info</h3>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-          <div className="form-row"><label>Full name</label><input className="input" defaultValue="Xtract User" /></div>
-          <div className="form-row"><label>Email</label><input className="input" defaultValue="admin@xtract.app" /></div>
-          <div className="form-row"><label>Company</label><input className="input" defaultValue="" placeholder="Your company" /></div>
-          <div className="form-row"><label>Role</label><input className="input" defaultValue="Admin" /></div>
+          <div className="form-row">
+            <label>Full name</label>
+            <input className="input" value={name} onChange={e => setName(e.target.value)} placeholder="Your name" />
+          </div>
+          <div className="form-row">
+            <label>Email</label>
+            <input className="input" value={user?.email || ''} disabled style={{ opacity: 0.6 }} />
+          </div>
         </div>
         <div className="row" style={{ justifyContent: 'flex-end', gap: 8 }}>
-          <button className="btn btn-ghost">Cancel</button>
-          <button className="btn btn-primary" onClick={() => toast('Saved')}>Save</button>
+          <button className="btn btn-ghost" onClick={() => setName(user?.name || '')}>Cancel</button>
+          <button className="btn btn-primary" disabled={saving} onClick={saveProfile}>
+            {saving ? 'Saving…' : 'Save'}
+          </button>
         </div>
       </div>
 
@@ -69,10 +101,10 @@ export default function Profile({ navigate, toast }) {
         <h3 style={{ color: 'var(--red)' }}>Danger zone</h3>
         <div className="row between">
           <div>
-            <div style={{ fontWeight: 600, fontSize: 13.5 }}>Delete all data</div>
-            <div className="muted" style={{ fontSize: 12.5 }}>Permanently removes all jobs and extracted data.</div>
+            <div style={{ fontWeight: 600, fontSize: 13.5 }}>Sign out</div>
+            <div className="muted" style={{ fontSize: 12.5 }}>You will need to sign in again to access Xtract.</div>
           </div>
-          <button className="btn btn-danger-outline btn-sm"><Ic.trash style={{ width: 13, height: 13 }} />Delete all</button>
+          <button className="btn btn-danger-outline btn-sm" onClick={logout}>Sign out</button>
         </div>
       </div>
     </div>

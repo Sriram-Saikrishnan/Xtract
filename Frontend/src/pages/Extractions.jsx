@@ -4,7 +4,7 @@ import StatusBadge from '../components/StatusBadge';
 import ConfBadge from '../components/ConfBadge';
 import FileIcon from '../components/FileIcon';
 import ConfirmDeleteModal from '../components/ConfirmDeleteModal';
-import { API_BASE, fmt, fmtDate } from '../utils/formatters';
+import { apiFetch, downloadExcel, fmt, fmtDate } from '../utils/formatters';
 
 export default function Extractions({ navigate, toast, highlightJobId }) {
   const [jobs, setJobs] = useState([]);
@@ -17,7 +17,7 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
-    fetch(`${API_BASE}/jobs`)
+    apiFetch('/jobs')
       .then(r => r.json())
       .then(d => {
         setJobs(d);
@@ -34,7 +34,7 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
     if (invoices[jid] || loadingInv[jid]) return;
     setLoadingInv(prev => ({ ...prev, [jid]: true }));
     try {
-      const res = await fetch(`${API_BASE}/jobs/${jid}/invoices`);
+      const res = await apiFetch(`/jobs/${jid}/invoices`);
       const data = await res.json();
       setInvoices(prev => ({ ...prev, [jid]: data }));
     } catch {}
@@ -51,7 +51,7 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
     if (!deleteModal) return;
     setDeleting(true);
     try {
-      const res = await fetch(`${API_BASE}/job/${deleteModal.id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/job/${deleteModal.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Delete failed');
       setJobs(prev => prev.filter(j => j.id !== deleteModal.id));
       setInvoices(prev => { const n = { ...prev }; delete n[deleteModal.id]; return n; });
@@ -116,7 +116,7 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
               <div className="row gap-2">
                 <span className="text-mono muted" style={{ fontSize: 12 }}>{job.id.slice(0, 8)}…</span>
                 {job.excel_ready && (
-                  <button className="btn btn-secondary btn-sm" onClick={e => { e.stopPropagation(); window.open(`${API_BASE}/download/${job.id}`); }}>
+                  <button className="btn btn-secondary btn-sm" onClick={e => { e.stopPropagation(); downloadExcel(job.id).catch(() => toast('Download failed')); }}>
                     <Ic.download style={{ width: 13, height: 13 }} /> Excel
                   </button>
                 )}

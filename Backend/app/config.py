@@ -1,6 +1,5 @@
 from pydantic_settings import BaseSettings
 from typing import List
-import json
 
 
 class Settings(BaseSettings):
@@ -10,6 +9,11 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str
+
+    # Auth
+    JWT_SECRET_KEY: str
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 days
 
     # Batch processing
     BATCH_SIZE: int = 10
@@ -25,7 +29,7 @@ class Settings(BaseSettings):
     AUTO_DELETE_HOURS: int = 2
     ALLOWED_EXTENSIONS: List[str] = ["jpg", "jpeg", "png", "pdf", "heic"]
 
-    # Server
+    # Server — set ALLOWED_ORIGINS in .env to include your Vercel frontend URL
     ALLOWED_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:5173"]
 
     class Config:

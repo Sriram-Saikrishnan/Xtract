@@ -1,10 +1,10 @@
 import uuid
 import logging
-from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, HTTPException, Depends
 
 from app.core.job_store import job_store
-from app.database import AsyncSessionLocal, JobORM
+from app.core.auth import get_current_user
+from app.database import AsyncSessionLocal, JobORM, UserORM
 from app.models.job import JobStatusResponse
 
 logger = logging.getLogger(__name__)
@@ -12,8 +12,8 @@ router = APIRouter()
 
 
 @router.get("/status/{job_id}", response_model=JobStatusResponse)
-async def get_status(job_id: str):
-    # Live in-memory status takes priority
+async def get_status(job_id: str, current_user: UserORM = Depends(get_current_user)):
+    # Live in-memory status takes priority (job is still processing on this instance)
     live = job_store.get(job_id)
     if live:
         return JobStatusResponse(
@@ -29,11 +29,11 @@ async def get_status(job_id: str):
             excel_ready=live.get("excel_ready", False),
         )
 
-    # Fall back to Supabase for historical jobs
+    # Fall back to DB for completed/historical jobs
     try:
         async with AsyncSessionLocal() as session:
             result = await session.get(JobORM, uuid.UUID(job_id))
-            if not result:
+            if not result or result.user_id != current_user.id:
                 raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
             return JobStatusResponse(
                 job_id=str(result.id),

@@ -3,12 +3,13 @@ import logging
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, File, Depends
 
 from app.config import settings
 from app.core.batch_processor import run_batch_processor
 from app.core.job_store import job_store
-from app.database import AsyncSessionLocal, JobORM
+from app.core.auth import get_current_user
+from app.database import AsyncSessionLocal, JobORM, UserORM
 from app.models.job import JobCreateResponse
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ def _validate_file(file: UploadFile):
 async def upload_files(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
+    current_user: UserORM = Depends(get_current_user),
 ):
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
@@ -57,20 +59,19 @@ async def upload_files(
         saved_paths.append(dest)
         filenames.append(file.filename)
 
-    # Create job in Supabase
     async with AsyncSessionLocal() as session:
         job = JobORM(
             id=uuid.UUID(job_id),
             status="queued",
             total_files=len(files),
+            user_id=current_user.id,
         )
         session.add(job)
         await session.commit()
 
-    # Track in memory for live polling
     job_store.create(job_id, total_files=len(files))
 
     background_tasks.add_task(run_batch_processor, job_id, saved_paths, filenames)
-    logger.info(f"Job {job_id} queued with {len(files)} files")
+    logger.info(f"Job {job_id} queued with {len(files)} files for user {current_user.id}")
 
     return JobCreateResponse(job_id=job_id, total_files=len(files))

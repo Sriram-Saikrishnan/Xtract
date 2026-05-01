@@ -2,11 +2,12 @@ import uuid
 import logging
 from typing import List, Optional, Dict, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.database import AsyncSessionLocal, InvoiceORM
+from app.core.auth import get_current_user
+from app.database import AsyncSessionLocal, InvoiceORM, JobORM, UserORM
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -33,9 +34,13 @@ class CorrectionRequest(BaseModel):
 
 
 @router.get("/review/{job_id}", response_model=List[FlaggedInvoice])
-async def get_flagged_bills(job_id: str):
+async def get_flagged_bills(job_id: str, current_user: UserORM = Depends(get_current_user)):
     try:
         async with AsyncSessionLocal() as session:
+            job = await session.get(JobORM, uuid.UUID(job_id))
+            if not job or job.user_id != current_user.id:
+                raise HTTPException(404, "Job not found")
+
             result = await session.execute(
                 select(InvoiceORM).where(
                     InvoiceORM.job_id == uuid.UUID(job_id),
@@ -43,6 +48,8 @@ async def get_flagged_bills(job_id: str):
                 )
             )
             invoices = result.scalars().all()
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Review fetch failed for job {job_id}: {e}")
         raise HTTPException(status_code=500, detail="Database error")
@@ -65,7 +72,7 @@ async def get_flagged_bills(job_id: str):
 
 
 @router.post("/review/{job_id}/correct")
-async def correct_invoice(job_id: str, correction: CorrectionRequest):
+async def correct_invoice(job_id: str, correction: CorrectionRequest, current_user: UserORM = Depends(get_current_user)):
     ALLOWED_FIELDS = {
         "invoice_number", "invoice_date", "supplier_name", "supplier_gstin",
         "supplier_state", "buyer_name", "buyer_gstin", "grand_total",
@@ -79,6 +86,10 @@ async def correct_invoice(job_id: str, correction: CorrectionRequest):
 
     try:
         async with AsyncSessionLocal() as session:
+            job = await session.get(JobORM, uuid.UUID(job_id))
+            if not job or job.user_id != current_user.id:
+                raise HTTPException(404, "Job not found")
+
             invoice = await session.get(InvoiceORM, uuid.UUID(correction.invoice_id))
             if not invoice or str(invoice.job_id) != job_id:
                 raise HTTPException(status_code=404, detail="Invoice not found")

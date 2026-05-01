@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useAuth } from './context/AuthContext';
 import Sidebar from './components/Sidebar';
 import Topbar from './components/Topbar';
 import Toast from './components/Toast';
@@ -8,13 +9,17 @@ import Processing from './pages/Processing';
 import Extractions from './pages/Extractions';
 import Detail from './pages/Detail';
 import Profile from './pages/Profile';
+import Login from './pages/Login';
+import Signup from './pages/Signup';
 
 export default function App() {
+  const { user } = useAuth();
   const [page, setPage] = useState('dashboard');
   const [jobId, setJobId] = useState(null);
   const [invoiceId, setInvoiceId] = useState(null);
   const [uploadedFiles, setUploadedFiles] = useState(null);
   const [toastMsg, setToastMsg] = useState(null);
+  const [authPage, setAuthPage] = useState('login');
   const toast = msg => setToastMsg(msg);
 
   const navigate = (newPage, opts = {}) => {
@@ -23,6 +28,17 @@ export default function App() {
     if (opts.uploadedFiles !== undefined) setUploadedFiles(opts.uploadedFiles);
     setPage(newPage);
   };
+
+  if (!user) {
+    return (
+      <>
+        {authPage === 'login'
+          ? <Login onSwitch={() => setAuthPage('signup')} toast={toast} />
+          : <Signup onSwitch={() => setAuthPage('login')} toast={toast} />}
+        <Toast message={toastMsg} onClose={() => setToastMsg(null)} />
+      </>
+    );
+  }
 
   const pageProps = { navigate, toast };
 

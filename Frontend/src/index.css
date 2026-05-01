@@ -261,3 +261,14 @@ a{text-decoration:none;color:inherit;}
 /* Row-level delete button: fade in on row hover */
 .tbl tbody tr .row-del{opacity:0;transition:opacity 0.15s ease;}
 .tbl tbody tr:hover .row-del{opacity:1;}
+/* Auth pages */
+.auth-wrap{min-height:100vh;display:grid;place-items:center;background:var(--surface);padding:20px;}
+.auth-card{background:var(--bg);border:0.5px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-lift);padding:36px 40px;width:100%;max-width:420px;}
+.auth-brand{display:flex;align-items:center;gap:8px;margin-bottom:28px;}
+.auth-title{font-size:22px;font-weight:700;letter-spacing:-0.02em;margin:0 0 6px;}
+.auth-sub{color:var(--text-2);font-size:13.5px;margin:0 0 24px;}
+.auth-form{display:flex;flex-direction:column;gap:14px;}
+.auth-error{background:var(--red-soft);color:var(--red);border:0.5px solid #e5c6bf;border-radius:8px;padding:10px 14px;font-size:13px;}
+.auth-switch{text-align:center;color:var(--text-2);font-size:13px;margin:20px 0 0;}
+.link-btn{background:none;border:none;color:var(--green);font-weight:600;cursor:pointer;padding:0;font-size:inherit;font-family:inherit;}
+.link-btn:hover{text-decoration:underline;}

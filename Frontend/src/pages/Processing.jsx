@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Ic } from '../components/icons';
 import FileIcon from '../components/FileIcon';
-import { API_BASE } from '../utils/formatters';
+import { apiFetch, downloadExcel } from '../utils/formatters';
 
 export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
   const [status, setStatus] = useState(null);
@@ -14,7 +14,7 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
 
     const poll = async () => {
       try {
-        const res = await fetch(`${API_BASE}/status/${jobId}`);
+        const res = await apiFetch(`/status/${jobId}`);
         if (res.ok) {
           const d = await res.json();
           setStatus(d);
@@ -64,7 +64,7 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
         </div>
         {isDone && (
           <div className="row gap-2">
-            <button className="btn btn-secondary" onClick={() => window.open(`${API_BASE}/download/${jobId}`)}>
+            <button className="btn btn-secondary" onClick={() => downloadExcel(jobId).catch(() => toast('Download failed'))}>
               <Ic.download style={{ width: 14, height: 14 }} /> Download Excel
             </button>
             <button className="btn btn-primary btn-lg" onClick={() => navigate('extractions', { jobId })}>

@@ -4,7 +4,7 @@ import StatusBadge from '../components/StatusBadge';
 import Sparkline from '../components/Sparkline';
 import LineChart from '../components/LineChart';
 import ConfirmDeleteModal from '../components/ConfirmDeleteModal';
-import { API_BASE, fmtDate } from '../utils/formatters';
+import { apiFetch, fmtDate } from '../utils/formatters';
 
 export default function Dashboard({ navigate, toast }) {
   const [jobs, setJobs] = useState([]);
@@ -13,7 +13,7 @@ export default function Dashboard({ navigate, toast }) {
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
-    fetch(`${API_BASE}/jobs`)
+    apiFetch('/jobs')
       .then(r => r.json())
       .then(d => { setJobs(d); setLoading(false); })
       .catch(() => setLoading(false));
@@ -23,7 +23,7 @@ export default function Dashboard({ navigate, toast }) {
     if (!deleteModal) return;
     setDeleting(true);
     try {
-      const res = await fetch(`${API_BASE}/job/${deleteModal.id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/job/${deleteModal.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Delete failed');
       setJobs(prev => prev.filter(j => j.id !== deleteModal.id));
       setDeleteModal(null);

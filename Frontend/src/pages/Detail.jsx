@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Ic } from '../components/icons';
 import StatusBadge from '../components/StatusBadge';
-import { API_BASE, fmt, fmtDate } from '../utils/formatters';
+import { apiFetch, downloadExcel, fmt, fmtDate } from '../utils/formatters';
 
 export default function Detail({ navigate, toast, invoiceId, jobId: propJobId }) {
   const [inv, setInv] = useState(null);
@@ -9,7 +9,7 @@ export default function Detail({ navigate, toast, invoiceId, jobId: propJobId })
 
   useEffect(() => {
     if (!invoiceId) { navigate('extractions'); return; }
-    fetch(`${API_BASE}/invoices/${invoiceId}`)
+    apiFetch(`/invoices/${invoiceId}`)
       .then(r => r.json())
       .then(d => { setInv(d); setLoading(false); })
       .catch(() => setLoading(false));
@@ -85,7 +85,7 @@ export default function Detail({ navigate, toast, invoiceId, jobId: propJobId })
         <div className="row gap-2">
           <StatusBadge status={inv.status} />
           {jid && (
-            <button className="btn btn-primary" onClick={() => window.open(`${API_BASE}/download/${jid}`)}>
+            <button className="btn btn-primary" onClick={() => downloadExcel(jid)}>
               <Ic.download style={{ width: 14, height: 14 }} /> Download Excel
             </button>
           )}
@@ -255,7 +255,7 @@ export default function Detail({ navigate, toast, invoiceId, jobId: propJobId })
             <h3>Actions</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {jid && (
-                <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }} onClick={() => window.open(`${API_BASE}/download/${jid}`)}>
+                <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }} onClick={() => downloadExcel(jid)}>
                   <Ic.download style={{ width: 14, height: 14 }} /> Download Excel
                 </button>
               )}
