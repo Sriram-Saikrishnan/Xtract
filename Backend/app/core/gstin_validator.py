@@ -159,6 +159,11 @@ FLAG_REGISTRY: dict[str, dict] = {
         "message": "GSTIN format is valid but could not be verified with government API.",
         "action": "Manually verify GSTIN on https://www.gst.gov.in before filing.",
     },
+    "GSTIN_AUTO_EXTRACTED": {
+        "severity": "INFO",
+        "message": "Supplier GSTIN was not found in primary extraction. Auto-detected from document text.",
+        "action": "Verify that the auto-detected GSTIN belongs to this supplier before filing.",
+    },
     # ── Buyer GSTIN format flags ─────────────────────────────────────────────
     "BUYER_GSTIN_MISSING": {
         "severity": "WARNING",
@@ -274,14 +279,20 @@ _cache = GSTINCache()
 # ── Checksum ──────────────────────────────────────────────────────────────────
 
 def _compute_checksum(gstin14: str) -> str:
-    """Compute the official GST checksum character for the first 14 characters."""
-    factor, total, mod = 2, 0, len(_CHARSET)
+    """Compute the official GST checksum character for the first 14 characters.
+
+    Factor alternates 1 → 2 → 1 → 2 … (starts at 1, not 2).
+    Verified against portal-confirmed GSTINs:
+      33AABCP7305B1Z → 1   (MOREIND AUTOMATION)
+      24AAJFR0223R1Z → 0   (RAINBOW TECHNOCAST)
+    """
+    factor, total, mod = 1, 0, len(_CHARSET)
     for ch in gstin14:
         digit = _CHARSET.index(ch)
         digit *= factor
         digit = (digit // mod) + (digit % mod)
         total += digit
-        factor = 3 - factor  # alternates 2 → 1 → 2 → …
+        factor = 3 - factor  # alternates 1 → 2 → 1 → …
     return _CHARSET[(mod - (total % mod)) % mod]
 
 

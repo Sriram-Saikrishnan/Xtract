@@ -5,9 +5,9 @@ Run with: pytest tests/gstin_validator_test.py -v
 
 All API calls are mocked — no real HTTP requests are made.
 
-Valid format reference (checksum verified):
-  "29AABCP1234A1ZP"
-  State: 29 (Karnataka), PAN: AABCP1234A, Entity: 1, Z-check: Z, Checksum: P
+Portal-verified GSTINs used as test anchors (confirmed on https://www.gst.gov.in):
+  33AABCP7305B1Z1  — MOREIND AUTOMATION PRIVATE LIMITED (Tamil Nadu)
+  24AAJFR0223R1Z0  — RAINBOW TECHNOCAST (Gujarat)
 """
 import pytest
 from unittest.mock import AsyncMock, patch
@@ -21,7 +21,10 @@ from app.core.gstin_validator import (
     validate_gstin,
 )
 
-VALID_GSTIN = "29AABCP1234A1ZP"
+# Primary test GSTIN — portal verified
+VALID_GSTIN = "33AABCP7305B1Z1"
+# Second portal-verified GSTIN used for extra coverage
+VALID_GSTIN_2 = "24AAJFR0223R1Z0"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -49,8 +52,8 @@ def test_gstin_invalid_length():
 
 
 def test_gstin_invalid_state_code():
-    # "00" is not a valid state code
-    flags = _validate_format("00AABCP1234A1ZP", "GSTIN")
+    # "00" is not a valid state code; rest of the GSTIN format is irrelevant here
+    flags = _validate_format("00AABCP7305B1Z1", "GSTIN")
     assert codes(flags) == ["GSTIN_INVALID_STATE_CODE"]
     assert flags[0]["severity"] == "CRITICAL"
 
@@ -279,3 +282,23 @@ async def test_no_api_key_returns_unverified_without_network():
 
     assert codes(result.flags) == ["GSTIN_UNVERIFIED"]
     assert result.einvoice_mandatory is None
+
+
+# ── Regression: portal-verified GSTINs must pass checksum ─────────────────────
+
+def test_checksum_moreind_automation():
+    """33AABCP7305B1Z1 — MOREIND AUTOMATION PRIVATE LIMITED, verified on govt portal."""
+    gstin = "33AABCP7305B1Z1"
+    assert _compute_checksum(gstin[:14]) == gstin[14], (
+        f"Checksum mismatch for {gstin}: got {_compute_checksum(gstin[:14])!r}, expected {gstin[14]!r}"
+    )
+    assert _validate_format(gstin, "GSTIN") == [], f"{gstin} should pass all format checks"
+
+
+def test_checksum_rainbow_technocast():
+    """24AAJFR0223R1Z0 — RAINBOW TECHNOCAST, Gujarat, verified on govt portal."""
+    gstin = "24AAJFR0223R1Z0"
+    assert _compute_checksum(gstin[:14]) == gstin[14], (
+        f"Checksum mismatch for {gstin}: got {_compute_checksum(gstin[:14])!r}, expected {gstin[14]!r}"
+    )
+    assert _validate_format(gstin, "GSTIN") == [], f"{gstin} should pass all format checks"

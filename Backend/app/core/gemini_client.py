@@ -52,7 +52,12 @@ Rules:
 6. confidence_score: your own assessment from 0.0 to 1.0 of how accurately you extracted the data.
 7. Return null for fields you cannot find — never guess invoice numbers or amounts.
 8. HSN/SAC codes are 4-8 digit numbers on Indian invoices.
-9. GSTIN is a 15-character alphanumeric code.
+9. GSTIN EXTRACTION — read the ENTIRE document, not just the header:
+   - A valid GSTIN matches the pattern: [0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]
+   - GSTINs can appear ANYWHERE: header, footer, stamp area, terms section, bank details block, or the bottom of the last page.
+   - If multiple GSTINs are present, the supplier GSTIN is the one associated with the seller/supplier entity; the buyer GSTIN is associated with the purchaser/consignee.
+   - NEVER leave supplier_gstin or buyer_gstin null if a 15-character code matching the above pattern exists anywhere on the document.
+   - If you see a GSTIN near words like "GSTIN", "GST No", "GST Reg No", "Tax ID" — that is the supplier GSTIN.
 10. If the same line item appears continued across pages, merge it into one entry — do not duplicate.
 
 Return this exact JSON structure:

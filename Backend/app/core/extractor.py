@@ -3,6 +3,9 @@ from typing import Optional
 from app.models.extraction import GeminiExtractionResult
 from app.models.bill import ExtractedBill, LineItem, BillStatus
 
+# Matches a structurally valid GSTIN anywhere in a string.
+_GSTIN_RE = re.compile(r'\b(\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z])\b')
+
 
 def _safe_float(val) -> float:
     if val is None:
@@ -49,6 +52,23 @@ def _clean_str(val) -> Optional[str]:
         return None
     s = str(val).strip()
     return s if s else None
+
+
+def _scan_for_gstin(raw: GeminiExtractionResult, exclude: Optional[str]) -> Optional[str]:
+    """
+    Scan every string field of the extraction result for a GSTIN pattern.
+    Returns the first match that is not the excluded GSTIN (typically the buyer GSTIN),
+    or None if nothing is found.
+    """
+    exclude_upper = (exclude or "").strip().upper()
+    all_text = " ".join(
+        str(v) for v in raw.model_dump().values() if isinstance(v, str) and v
+    )
+    for match in _GSTIN_RE.finditer(all_text):
+        candidate = match.group(1).upper()
+        if candidate != exclude_upper:
+            return candidate
+    return None
 
 
 def normalize(raw: GeminiExtractionResult, filename: str) -> ExtractedBill:
@@ -113,3 +133,19 @@ def normalize(raw: GeminiExtractionResult, filename: str) -> ExtractedBill:
         flags=[],
         line_items=line_items,
     )
+
+    # Fallback: if primary extraction missed supplier_gstin, scan all text fields
+    # for a GSTIN pattern and auto-populate (excluding the buyer GSTIN).
+    if not bill.supplier_gstin:
+        found = _scan_for_gstin(raw, exclude=bill.buyer_gstin)
+        if found:
+            import logging
+            logging.getLogger(__name__).info(
+                f"[{filename}] supplier_gstin auto-extracted: {found}"
+            )
+            bill = bill.model_copy(update={
+                "supplier_gstin": found,
+                "flags": ["GSTIN_AUTO_EXTRACTED"],
+            })
+
+    return bill
