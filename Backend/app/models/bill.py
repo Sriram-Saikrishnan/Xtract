@@ -73,6 +73,7 @@ class ExtractedBill(BaseModel):
     confidence_score: float = 0.8
     status: BillStatus = BillStatus.VERIFIED
     flags: List[str] = Field(default_factory=list)
+    einvoice_mandatory: Optional[bool] = None  # set by GSTIN validator from GSTINCheck API
 
     # Line items
     line_items: List[LineItem] = Field(default_factory=list)

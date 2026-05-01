@@ -11,6 +11,7 @@ from app.config import settings
 from app.core.duplicate import check_duplicate
 from app.core.extractor import normalize
 from app.core.gemini_client import extract_bill, get_mime_type, split_pdf_pages
+from app.core.gstin_validator import validate_gstin, validate_buyer_gstin
 from app.core.job_store import job_store
 from app.core.verifier import verify
 from app.core.storage import upload_excel
@@ -143,6 +144,18 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
             else:
                 for bill in results:
                     bill = verify(bill)
+
+                    gstin_result = await validate_gstin(bill.supplier_gstin, bill.supplier_name)
+                    buyer_gstin_flags = await validate_buyer_gstin(bill.buyer_gstin)
+                    new_flag_codes = [f["code"] for f in gstin_result.flags + buyer_gstin_flags]
+                    bill_updates: dict = {}
+                    if new_flag_codes:
+                        bill_updates["flags"] = list(bill.flags) + new_flag_codes
+                    if gstin_result.einvoice_mandatory is not None:
+                        bill_updates["einvoice_mandatory"] = gstin_result.einvoice_mandatory
+                    if bill_updates:
+                        bill = bill.model_copy(update=bill_updates)
+
                     bill = check_duplicate(bill, processed_bills)
                     await _save_bill(session, job_id, bill)
                     processed_bills.append(bill)
