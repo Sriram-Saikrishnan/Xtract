@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 days
 
+    # Supabase Storage
+    SUPABASE_URL: str           # https://xxxx.supabase.co  (Project Settings → API → Project URL)
+    SUPABASE_SERVICE_KEY: str   # Project Settings → API → service_role
+
     # Batch processing
     BATCH_SIZE: int = 10
     BATCH_DELAY_SECONDS: int = 65

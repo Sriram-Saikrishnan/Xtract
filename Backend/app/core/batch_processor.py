@@ -13,6 +13,7 @@ from app.core.extractor import normalize
 from app.core.gemini_client import extract_bill, get_mime_type, split_pdf_pages
 from app.core.job_store import job_store
 from app.core.verifier import verify
+from app.core.storage import upload_excel
 from app.database import AsyncSessionLocal, InvoiceORM, JobORM, LineItemORM
 from app.excel.excel_builder import build_excel
 from app.models.bill import BillStatus, ExtractedBill
@@ -122,7 +123,7 @@ async def _save_bill(session: AsyncSession, job_id: str, bill: ExtractedBill):
     return invoice_id
 
 
-async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: List[str]):
+async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: List[str], user_id: str = ""):
     job_store.update(job_id, status="processing")
 
     processed_bills: List[ExtractedBill] = []
@@ -155,15 +156,22 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
 
         job_store.increment(job_id, "processed_files")
 
-    # Build Excel
+    # Build Excel, upload to Supabase Storage, delete local temp file
     try:
-        excel_path = await build_excel(job_id)
+        local_excel = await build_excel(job_id)
+
+        storage_path = await upload_excel(user_id, job_id, local_excel)
+        try:
+            local_excel.unlink(missing_ok=True)
+        except Exception:
+            pass  # temp file cleanup is best-effort
+
         async with AsyncSessionLocal() as session:
             result = await session.get(JobORM, uuid.UUID(job_id))
             if result:
                 result.status = "done"
                 result.completed_at = datetime.utcnow()
-                result.excel_path = str(excel_path)
+                result.excel_path = storage_path  # Supabase key, not a local path
                 result.verified_count = total_verified
                 result.flagged_count = total_flagged
                 result.error_count = total_errors
@@ -178,7 +186,7 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
             flagged_count=total_flagged,
             error_count=total_errors,
         )
-        logger.info(f"Job {job_id}: completed. Excel at {excel_path}")
+        logger.info(f"Job {job_id}: completed. Excel at storage:{storage_path}")
     except Exception as e:
-        logger.error(f"Job {job_id}: Excel build failed: {e}")
+        logger.error(f"Job {job_id}: Excel build/upload failed: {e}")
         job_store.update(job_id, status="error")

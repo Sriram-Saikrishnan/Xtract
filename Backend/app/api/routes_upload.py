@@ -71,7 +71,7 @@ async def upload_files(
 
     job_store.create(job_id, total_files=len(files))
 
-    background_tasks.add_task(run_batch_processor, job_id, saved_paths, filenames)
+    background_tasks.add_task(run_batch_processor, job_id, saved_paths, filenames, str(current_user.id))
     logger.info(f"Job {job_id} queued with {len(files)} files for user {current_user.id}")
 
     return JobCreateResponse(job_id=job_id, total_files=len(files))

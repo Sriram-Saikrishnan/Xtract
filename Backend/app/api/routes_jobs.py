@@ -1,6 +1,5 @@
 import uuid
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy import select
@@ -8,6 +7,7 @@ from sqlalchemy import select
 from app.database import AsyncSessionLocal, JobORM, InvoiceORM, LineItemORM, UserORM, db_retry
 from app.core.auth import get_current_user
 from app.core.job_store import job_store
+from app.core.storage import delete_excel, is_storage_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Jobs"])
@@ -176,10 +176,7 @@ async def delete_job(job_id: str, current_user: UserORM = Depends(get_current_us
 
     job_store.delete(job_id)
 
-    if excel_path:
-        try:
-            Path(excel_path).unlink(missing_ok=True)
-        except Exception as e:
-            logger.warning(f"Could not remove excel file {excel_path}: {e}")
+    if excel_path and is_storage_key(excel_path):
+        await delete_excel(excel_path)
 
     return {"deleted": job_id}
