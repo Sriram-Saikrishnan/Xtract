@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -7,7 +8,6 @@ from typing import List
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.core.duplicate import check_duplicate
 from app.core.extractor import normalize
 from app.core.gemini_client import extract_bill, get_mime_type, split_pdf_pages
@@ -126,65 +126,142 @@ async def _save_bill(session: AsyncSession, job_id: str, bill: ExtractedBill):
 
 async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: List[str], user_id: str = ""):
     job_store.update(job_id, status="processing")
-
-    processed_bills: List[ExtractedBill] = []
     file_list = list(zip(file_paths, filenames))
+    total_files = len(file_list)
+    job_start = time.monotonic()
 
-    total_verified = 0
-    total_flagged = 0
+    # ── Stage 1: Extraction ───────────────────────────────────────────────────
+    t0 = time.monotonic()
+    await job_store.push_event(job_id, "stage_start", {"stage": "extraction", "total": total_files})
+
+    all_bills: List[ExtractedBill] = []
     total_errors = 0
 
-    for fp, fn in file_list:
-        results = await _process_file(fp, fn)  # list — one bill per PDF page (or per image)
-
-        async with AsyncSessionLocal() as session:
-            if not results:
-                total_errors += 1
-                job_store.increment(job_id, "error_count")
-            else:
-                for bill in results:
-                    bill = verify(bill)
-
-                    gstin_result = await validate_gstin(bill.supplier_gstin, bill.supplier_name)
-                    buyer_gstin_flags = await validate_buyer_gstin(bill.buyer_gstin)
-                    new_flag_codes = [f["code"] for f in gstin_result.flags + buyer_gstin_flags]
-                    bill_updates: dict = {}
-                    if new_flag_codes:
-                        bill_updates["flags"] = list(bill.flags) + new_flag_codes
-                    if gstin_result.einvoice_mandatory is not None:
-                        bill_updates["einvoice_mandatory"] = gstin_result.einvoice_mandatory
-                    if bill_updates:
-                        bill = bill.model_copy(update=bill_updates)
-
-                    bill = check_duplicate(bill, processed_bills)
-                    await _save_bill(session, job_id, bill)
-                    processed_bills.append(bill)
-
-                    if bill.status == BillStatus.VERIFIED:
-                        total_verified += 1
-                        job_store.increment(job_id, "verified_count")
-                    else:
-                        total_flagged += 1
-                        job_store.increment(job_id, "flagged_count")
-
+    for i, (fp, fn) in enumerate(file_list):
+        await job_store.push_event(job_id, "stage_progress", {
+            "stage": "extraction",
+            "detail": f"Extracting {fn}...",
+            "current": i + 1,
+            "total": total_files,
+        })
+        results = await _process_file(fp, fn)
+        if not results:
+            total_errors += 1
+            job_store.increment(job_id, "error_count")
+        else:
+            all_bills.extend(results)
         job_store.increment(job_id, "processed_files")
 
-    # Build Excel, upload to Supabase Storage, delete local temp file
+    await job_store.push_event(job_id, "stage_complete", {
+        "stage": "extraction",
+        "duration_ms": int((time.monotonic() - t0) * 1000),
+    })
+
+    total_bills = len(all_bills)
+
+    # ── Stage 2: GSTIN Verification ───────────────────────────────────────────
+    t0 = time.monotonic()
+    await job_store.push_event(job_id, "stage_start", {"stage": "gstin", "total": total_bills})
+
+    gstin_flag_codes: List[List[str]] = []
+    einvoice_flags: List = []
+
+    for i, bill in enumerate(all_bills):
+        gstin_label = bill.supplier_gstin or "no GSTIN"
+        await job_store.push_event(job_id, "stage_progress", {
+            "stage": "gstin",
+            "detail": f"Checking {gstin_label} with govt API...",
+            "current": i + 1,
+            "total": total_bills,
+        })
+        gstin_result = await validate_gstin(bill.supplier_gstin, bill.supplier_name)
+        buyer_flags = await validate_buyer_gstin(bill.buyer_gstin)
+        gstin_flag_codes.append([f["code"] for f in gstin_result.flags + buyer_flags])
+        einvoice_flags.append(gstin_result.einvoice_mandatory)
+
+    await job_store.push_event(job_id, "stage_complete", {
+        "stage": "gstin",
+        "duration_ms": int((time.monotonic() - t0) * 1000),
+    })
+
+    # Apply GSTIN flags to bills
+    updated_bills = []
+    for bill, codes, einvoice in zip(all_bills, gstin_flag_codes, einvoice_flags):
+        updates: dict = {}
+        if codes:
+            updates["flags"] = list(bill.flags) + codes
+        if einvoice is not None:
+            updates["einvoice_mandatory"] = einvoice
+        updated_bills.append(bill.model_copy(update=updates) if updates else bill)
+    all_bills = updated_bills
+
+    # ── Stage 3: Compliance Checks ────────────────────────────────────────────
+    t0 = time.monotonic()
+    await job_store.push_event(job_id, "stage_start", {"stage": "compliance", "total": total_bills})
+
+    processed_bills: List[ExtractedBill] = []
+    total_verified = 0
+    total_flagged = 0
+
+    for i, bill in enumerate(all_bills):
+        label = bill.invoice_number or bill.source_filename
+        await job_store.push_event(job_id, "stage_progress", {
+            "stage": "compliance",
+            "detail": f"Checking {label}...",
+            "current": i + 1,
+            "total": total_bills,
+        })
+        bill = verify(bill)
+        bill = check_duplicate(bill, processed_bills)
+
+        async with AsyncSessionLocal() as session:
+            await _save_bill(session, job_id, bill)
+
+        processed_bills.append(bill)
+
+        if bill.status == BillStatus.VERIFIED:
+            total_verified += 1
+            job_store.increment(job_id, "verified_count")
+        else:
+            total_flagged += 1
+            job_store.increment(job_id, "flagged_count")
+
+    await job_store.push_event(job_id, "stage_complete", {
+        "stage": "compliance",
+        "duration_ms": int((time.monotonic() - t0) * 1000),
+    })
+
+    # ── Stage 4: Excel Report ─────────────────────────────────────────────────
+    t0 = time.monotonic()
+    await job_store.push_event(job_id, "stage_start", {"stage": "excel", "total": 1})
+
     try:
+        await job_store.push_event(job_id, "stage_progress", {
+            "stage": "excel",
+            "detail": "Building Excel report...",
+            "current": 1,
+            "total": 1,
+        })
         local_excel = await build_excel(job_id)
 
+        await job_store.push_event(job_id, "stage_progress", {
+            "stage": "excel",
+            "detail": "Uploading to storage...",
+            "current": 1,
+            "total": 1,
+        })
         storage_path = await upload_excel(user_id, job_id, local_excel)
         try:
             local_excel.unlink(missing_ok=True)
         except Exception:
-            pass  # temp file cleanup is best-effort
+            pass
 
         async with AsyncSessionLocal() as session:
             result = await session.get(JobORM, uuid.UUID(job_id))
             if result:
                 result.status = "done"
                 result.completed_at = datetime.utcnow()
-                result.excel_path = storage_path  # Supabase key, not a local path
+                result.excel_path = storage_path
                 result.verified_count = total_verified
                 result.flagged_count = total_flagged
                 result.error_count = total_errors
@@ -199,7 +276,26 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
             flagged_count=total_flagged,
             error_count=total_errors,
         )
+
+        await job_store.push_event(job_id, "stage_complete", {
+            "stage": "excel",
+            "duration_ms": int((time.monotonic() - t0) * 1000),
+        })
+        await job_store.push_event(job_id, "processing_complete", {
+            "verified": total_verified,
+            "flagged": total_flagged,
+            "errors": total_errors,
+            "duration_ms": int((time.monotonic() - job_start) * 1000),
+        })
         logger.info(f"Job {job_id}: completed. Excel at storage:{storage_path}")
+
     except Exception as e:
         logger.error(f"Job {job_id}: Excel build/upload failed: {e}")
         job_store.update(job_id, status="error")
+        await job_store.push_event(job_id, "processing_complete", {
+            "verified": total_verified,
+            "flagged": total_flagged,
+            "errors": total_errors + 1,
+            "duration_ms": int((time.monotonic() - job_start) * 1000),
+            "error": str(e),
+        })

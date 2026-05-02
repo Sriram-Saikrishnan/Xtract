@@ -1,3 +1,4 @@
+import asyncio
 import threading
 from typing import Dict, Any, Optional
 from datetime import datetime
@@ -6,6 +7,7 @@ from datetime import datetime
 class JobStore:
     def __init__(self):
         self._store: Dict[str, Dict[str, Any]] = {}
+        self._queues: Dict[str, asyncio.Queue] = {}
         self._lock = threading.Lock()
 
     def create(self, job_id: str, total_files: int):
@@ -22,6 +24,16 @@ class JobStore:
                 "completed_at": None,
                 "excel_ready": False,
             }
+            self._queues[job_id] = asyncio.Queue()
+
+    async def push_event(self, job_id: str, event_type: str, data: dict):
+        q = self.get_event_queue(job_id)
+        if q is not None:
+            await q.put({"type": event_type, "data": data})
+
+    def get_event_queue(self, job_id: str) -> Optional[asyncio.Queue]:
+        with self._lock:
+            return self._queues.get(job_id)
 
     def get(self, job_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -40,6 +52,7 @@ class JobStore:
     def delete(self, job_id: str):
         with self._lock:
             self._store.pop(job_id, None)
+            self._queues.pop(job_id, None)
 
     def exists(self, job_id: str) -> bool:
         with self._lock:

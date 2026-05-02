@@ -1,44 +1,109 @@
 import { useState, useEffect, useRef } from 'react';
 import { Ic } from '../components/icons';
-import FileIcon from '../components/FileIcon';
-import { apiFetch, downloadExcel } from '../utils/formatters';
+import { API_BASE, downloadExcel } from '../utils/formatters';
+
+const STAGES = [
+  { id: 'extraction', label: 'Extraction',          desc: 'Extracting data from documents' },
+  { id: 'gstin',      label: 'GSTIN Verification',  desc: 'Verifying supplier GSTINs with govt API' },
+  { id: 'compliance', label: 'Compliance Checks',   desc: 'Math validation and duplicate detection' },
+  { id: 'excel',      label: 'Excel Report',        desc: 'Building and uploading results' },
+];
+
+const INIT_STAGE = { status: 'pending', detail: '', current: 0, total: 0, startTime: null, duration: null };
+
+function fmtStageElapsed(startTime, now) {
+  const s = (now - startTime) / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  return `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s`;
+}
+
+function fmtDuration(ms) {
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  return `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s`;
+}
+
+function fmtFinal(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
 
 export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
-  const [status, setStatus] = useState(null);
-  const [elapsed, setElapsed] = useState(0);
-  const intervalRef = useRef(null);
-  const elapsedRef = useRef(null);
+  const [stages, setStages] = useState({
+    extraction: { ...INIT_STAGE },
+    gstin:      { ...INIT_STAGE },
+    compliance: { ...INIT_STAGE },
+    excel:      { ...INIT_STAGE },
+  });
+  const [completionData, setCompletionData] = useState(null);
+  const [isDone, setIsDone] = useState(false);
+  const [isError, setIsError] = useState(false);
+  const [finalDuration, setFinalDuration] = useState(null);
+  const [now, setNow] = useState(Date.now());
+  const timerRef = useRef(null);
+  const esRef = useRef(null);
 
   useEffect(() => {
     if (!jobId) { navigate('dashboard'); return; }
 
-    const poll = async () => {
-      try {
-        const res = await apiFetch(`/status/${jobId}`);
-        if (res.ok) {
-          const d = await res.json();
-          setStatus(d);
-          if (d.status === 'done' || d.status === 'error') {
-            clearInterval(intervalRef.current);
-          }
-        }
-      } catch {}
+    const token = localStorage.getItem('xtract_token');
+    const es = new EventSource(`${API_BASE}/stream/${jobId}?token=${encodeURIComponent(token)}`);
+    esRef.current = es;
+
+    timerRef.current = setInterval(() => setNow(Date.now()), 500);
+
+    es.addEventListener('stage_start', (e) => {
+      const { stage, total } = JSON.parse(e.data);
+      setStages(prev => ({
+        ...prev,
+        [stage]: { ...prev[stage], status: 'active', total, startTime: Date.now() },
+      }));
+    });
+
+    es.addEventListener('stage_progress', (e) => {
+      const { stage, detail, current, total } = JSON.parse(e.data);
+      setStages(prev => ({
+        ...prev,
+        [stage]: { ...prev[stage], detail, current, total },
+      }));
+    });
+
+    es.addEventListener('stage_complete', (e) => {
+      const { stage, duration_ms } = JSON.parse(e.data);
+      setStages(prev => ({
+        ...prev,
+        [stage]: { ...prev[stage], status: 'complete', duration: duration_ms },
+      }));
+    });
+
+    es.addEventListener('processing_complete', (e) => {
+      const data = JSON.parse(e.data);
+      setCompletionData(data);
+      setFinalDuration(data.duration_ms);
+      setIsDone(!data.error);
+      setIsError(!!data.error);
+      clearInterval(timerRef.current);
+      es.close();
+    });
+
+    es.onerror = () => {
+      // SSE connection lost — UI will stay in last-known state
     };
 
-    poll();
-    intervalRef.current = setInterval(poll, 2000);
-    elapsedRef.current = setInterval(() => setElapsed(e => e + 1), 1000);
-    return () => { clearInterval(intervalRef.current); clearInterval(elapsedRef.current); };
+    return () => {
+      es.close();
+      clearInterval(timerRef.current);
+    };
   }, [jobId]);
 
-  const total = status?.total_files || uploadedFiles?.length || 1;
-  const processed = status?.processed_files || 0;
-  const pct = Math.round((processed / total) * 100);
-  const isDone = status?.status === 'done';
-  const isError = status?.status === 'error';
-  const fmtTime = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  const globalElapsed = finalDuration != null
+    ? fmtFinal(finalDuration)
+    : null;
 
-  const fileList = uploadedFiles || Array.from({ length: total }, (_, i) => ({ name: `File ${i + 1}`, type: 'pdf' }));
+  const summary = completionData
+    ? `${completionData.verified} verified · ${completionData.flagged} flagged · ${completionData.errors} errors`
+    : '';
 
   return (
     <div className="page">
@@ -57,9 +122,10 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
             {!isDone && !isError && <span className="pulse-dot"></span>}
           </h1>
           <p className="page-sub">
-            {isDone
-              ? `${status.verified_count} verified · ${status.flagged_count} flagged · ${status.error_count} errors`
-              : `${processed} of ${total} files processed · ${fmtTime(elapsed)} elapsed`}
+            {isDone && summary}
+            {isDone && globalElapsed && <span style={{ marginLeft: 10 }}>· Completed in {globalElapsed}</span>}
+            {!isDone && !isError && 'Processing your documents…'}
+            {isError && 'An error occurred during processing.'}
           </p>
         </div>
         {isDone && (
@@ -74,56 +140,65 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
         )}
       </div>
 
-      <div className="card card-pad mb-3">
-        <div className="row between mb-1">
-          <div className="text-mono" style={{ fontWeight: 700, fontSize: 15 }}>{processed} / {total}</div>
-          <div className="muted text-mono" style={{ fontSize: 12.5 }}>{pct}%</div>
-        </div>
-        <div className="progress thick">
-          <div className="fill" style={{ width: `${pct}%` }}></div>
-        </div>
-      </div>
-
+      {/* Stage progress */}
       <div className="card mb-3">
         <div className="card-head">
-          <h3 className="card-title">Files</h3>
-          <div className="row gap-2">
-            {status && <>
-              <span className="badge badge-green">{status.verified_count} verified</span>
-              {status.flagged_count > 0 && <span className="badge badge-amber">{status.flagged_count} flagged</span>}
-              {status.error_count > 0 && <span className="badge badge-red">{status.error_count} errors</span>}
-            </>}
-          </div>
+          <h3 className="card-title">Pipeline</h3>
         </div>
-        <div className="scroll-list">
-          {fileList.map((f, i) => {
-            const done = i < processed;
-            const active = i === processed && !isDone;
+        <div className="stages">
+          {STAGES.map((s, idx) => {
+            const st = stages[s.id];
+            const isLast = idx === STAGES.length - 1;
             return (
-              <div key={i} className={`proc-row ${done ? 'done' : ''}`}>
-                <FileIcon type={f.type || 'pdf'} />
-                <div className="fname">{f.name}</div>
-                <div className="pages"></div>
-                <div>
-                  {done && <span className="badge badge-green"><Ic.check style={{ width: 11, height: 11 }} />Done</span>}
-                  {active && <span className="badge badge-amber"><span className="spinner" style={{ width: 9, height: 9, borderWidth: 1.5 }}></span>Processing</span>}
-                  {!done && !active && <span className="badge badge-gray">Queued</span>}
+              <div key={s.id} className="stage-row">
+                <div className="stage-indicator">
+                  {st.status === 'active'
+                    ? <span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }}></span>
+                    : <div className={`stage-dot ${st.status}`}></div>
+                  }
+                  {!isLast && <div className="stage-line"></div>}
                 </div>
-                <div>{active && <div className="progress"><div className="fill" style={{ width: '60%', animation: 'none' }}></div></div>}</div>
-                <div className="conf"></div>
-                <div className="time-col"></div>
+
+                <div className="stage-body">
+                  {st.status === 'pending' && (
+                    <>
+                      <div className="stage-head">
+                        <span className="stage-title muted">{s.label}</span>
+                      </div>
+                      <div className="stage-detail muted">{s.desc}</div>
+                    </>
+                  )}
+
+                  {st.status === 'active' && (
+                    <>
+                      <div className="stage-head">
+                        <span className="stage-title">{s.label}</span>
+                        <span className="pulse-dot" style={{ width: 6, height: 6 }}></span>
+                      </div>
+                      <div className="stage-detail">{st.detail || s.desc}</div>
+                      {st.total > 0 && (
+                        <div className="stage-sub">
+                          {st.current} of {st.total}
+                          {st.startTime && <> · {fmtStageElapsed(st.startTime, now)} elapsed</>}
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {st.status === 'complete' && (
+                    <div className="stage-head">
+                      <span className="stage-title">{s.label}</span>
+                      <span className="stage-done-badge">done</span>
+                      {st.duration != null && (
+                        <span className="stage-duration">{fmtDuration(st.duration)}</span>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })}
         </div>
-      </div>
-
-      <div className="stats-strip mb-3">
-        <div><div className="lbl">Files</div><div className="val">{total}</div></div>
-        <div><div className="lbl">Done</div><div className="val">{processed}</div></div>
-        <div><div className="lbl">Verified</div><div className="val">{status?.verified_count ?? '—'}</div></div>
-        <div><div className="lbl">Flagged</div><div className="val">{status?.flagged_count ?? '—'}</div></div>
-        <div><div className="lbl">Elapsed</div><div className="val">{fmtTime(elapsed)}</div></div>
       </div>
 
       <div className="row between">

@@ -126,9 +126,8 @@ FLAG_REGISTRY: dict[str, dict] = {
     },
     # ── Supplier GSTIN API flags ─────────────────────────────────────────────
     "GSTIN_NOT_FOUND": {
-        # Reserved for a future authoritative API; not raised by GSTINCheck.
         "severity": "CRITICAL",
-        "message": "GSTIN not found in government records. ITC cannot be claimed.",
+        "message": "GSTIN not found after 3 verification attempts. Verify on gst.gov.in before claiming ITC.",
         "action": "Contact supplier to provide a valid, active GSTIN. Do not file.",
     },
     "GSTIN_CANCELLED": {
@@ -222,6 +221,7 @@ SEVERITY_ORDER: dict[str, int] = {"CRITICAL": 0, "WARNING": 1, "INFO": 2}
 _GSTINCHECK_API_BASE = "https://sheet.gstincheck.co.in/check-einvoice-status"
 _CHARSET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _CACHE_FILE = Path("gstin_cache.json")
+_RETRY_DELAYS = (0, 2, 4)  # seconds before each of the 3 attempts
 
 
 # ── Return type for validate_gstin ───────────────────────────────────────────
@@ -338,66 +338,74 @@ def _validate_format(gstin: str, prefix: str) -> list[dict]:
     return []
 
 
-# ── GSTINCheck API call ───────────────────────────────────────────────────────
+# ── GSTINCheck API ────────────────────────────────────────────────────────────
 
-async def _call_gstincheck_api(gstin: str) -> Optional[dict]:
+async def _fetch_gstin_data(gstin: str) -> tuple[str, Optional[dict]]:
     """
-    Call the GSTINCheck e-invoice status API.
+    Fetch GSTIN via GSTINCheck API with up to 3 attempts and backoff on flag:false.
 
-    Returns parsed JSON on success, None on any failure (network error, timeout,
-    non-200 response, missing API key). Caller must treat None as UNVERIFIED.
-
-    Cache key is the GSTIN string; cache is shared with any future API integrations.
-    Live calls are rate-limited to ≥1 second apart. One retry on timeout.
+    Outcomes:
+      "success"     — flag:true + authStatus:A  (response cached and returned)
+      "not_found"   — all 3 attempts returned flag:false
+      "inactive"    — flag:true but authStatus != A (definitive; no retry)
+      "mixed"       — some flag:false + some errors (inconsistent API responses)
+      "unreachable" — all 3 attempts failed with exception or timeout
     """
     api_key = os.getenv("GSTINCHECK_API_KEY", "").strip()
     if not api_key:
-        logger.debug("GSTINCHECK_API_KEY not configured; skipping API verification")
-        return None
+        logger.debug("GSTINCHECK_API_KEY not set; skipping API verification")
+        return "unreachable", None
 
     cached = _cache.get(gstin)
     if cached is not None:
         logger.debug(f"GSTIN cache hit: {gstin}")
-        return cached
-
-    await _cache.throttle()
+        return "success", cached
 
     url = f"{_GSTINCHECK_API_BASE}/{api_key}/{gstin}"
-    for attempt in range(2):
+    outcomes: list[str] = []
+
+    for attempt, delay in enumerate(_RETRY_DELAYS, 1):
+        if delay:
+            logger.info(f"GSTIN {gstin} attempt {attempt}: waiting {delay}s before retry")
+            await asyncio.sleep(delay)
+
+        await _cache.throttle()
+
         try:
             async with httpx.AsyncClient(timeout=8) as client:
                 res = await client.get(url)
-            if res.status_code == 200:
-                data = res.json()
-                _cache.set(gstin, data)
-                return data
-            logger.warning(f"GSTINCheck API HTTP {res.status_code} for {gstin}")
-            return None
-        except httpx.TimeoutException:
-            if attempt == 0:
-                logger.warning(f"GSTINCheck API timeout for {gstin}, retrying once…")
+
+            if res.status_code != 200:
+                logger.info(f"GSTIN {gstin} attempt {attempt}: HTTP {res.status_code}")
+                outcomes.append("error")
                 continue
-            logger.warning(f"GSTINCheck API timed out twice for {gstin}")
-            return None
+
+            data = res.json()
+            if not data.get("flag", False):
+                logger.info(f"GSTIN {gstin} attempt {attempt}: flag=false")
+                outcomes.append("false")
+                continue
+
+            auth = data.get("authStatus", "")
+            logger.info(f"GSTIN {gstin} attempt {attempt}: flag=true authStatus={auth!r}")
+            if auth == "A":
+                _cache.set(gstin, data)
+                return "success", data
+            # flag:true but not confirmed active — stop retrying, return as inactive
+            return "inactive", None
+
+        except httpx.TimeoutException:
+            logger.info(f"GSTIN {gstin} attempt {attempt}: timeout")
+            outcomes.append("error")
         except Exception as exc:
-            logger.warning(f"GSTINCheck API error for {gstin}: {exc}")
-            return None
+            logger.info(f"GSTIN {gstin} attempt {attempt}: error — {exc}")
+            outcomes.append("error")
 
-    return None
-
-
-# ── API-level checks ──────────────────────────────────────────────────────────
-
-_UNVERIFIED_FLAG = {
-    "code": "GSTIN_UNVERIFIED",
-    "severity": "INFO",
-    "message": "GSTIN format valid but could not be verified with API.",
-}
-_BUYER_UNVERIFIED_FLAG = {
-    "code": "BUYER_GSTIN_UNVERIFIED",
-    "severity": "INFO",
-    "message": "Buyer GSTIN format valid but could not be verified with API.",
-}
+    if all(o == "false" for o in outcomes):
+        return "not_found", None
+    if all(o == "error" for o in outcomes):
+        return "unreachable", None
+    return "mixed", None
 
 
 async def _validate_via_api(
@@ -409,42 +417,50 @@ async def _validate_via_api(
     """
     Run GSTINCheck API checks. Only called after all format checks pass.
 
-    Returns (flags, einvoice_mandatory):
-      flags              — list of flag dicts (may be empty)
-      einvoice_mandatory — True/False when API confirms status A; None otherwise
+    Returns (flags, einvoice_mandatory).
     """
-    unverified = _UNVERIFIED_FLAG if prefix == "GSTIN" else _BUYER_UNVERIFIED_FLAG
+    unverified_code = f"{prefix}_UNVERIFIED"
+    not_found_code  = f"{prefix}_NOT_FOUND"
 
     try:
-        data = await _call_gstincheck_api(gstin)
+        outcome, data = await _fetch_gstin_data(gstin)
     except Exception as exc:
-        logger.warning(f"Unexpected error calling GSTINCheck for {gstin}: {exc}")
-        data = None
+        logger.warning(f"Unexpected error in GSTIN fetch for {gstin}: {exc}")
+        return [{"code": unverified_code, "severity": "INFO",
+                 "message": "GSTIN format valid but verification API unreachable."}], None
 
-    if data is None:
-        return [unverified], None
-
-    # flag field indicates whether the API found the GSTIN
-    if not data.get("flag", False):
-        return [unverified], None
-
-    auth_status = data.get("authStatus", "")
-    if auth_status != "A":
-        # authStatus blank/missing/cancelled/inactive — not reliable enough to
-        # raise CRITICAL; some valid small taxpayers return blank status.
+    if outcome == "not_found":
         return [{
-            "code": unverified["code"],
+            "code": not_found_code,
+            "severity": "CRITICAL",
+            "message": "GSTIN not found after 3 verification attempts. Verify on gst.gov.in before claiming ITC.",
+        }], None
+
+    if outcome == "mixed":
+        return [{
+            "code": unverified_code,
             "severity": "INFO",
             "message": (
-                "GSTIN could not be confirmed as active. "
-                "Verify status manually before claiming ITC."
+                "GSTIN could not be reliably verified — API returned inconsistent responses. "
+                "Verify manually before filing."
             ),
         }], None
 
-    # authStatus == "A" — GSTIN is confirmed active
+    if outcome == "unreachable":
+        return [{"code": unverified_code, "severity": "INFO",
+                 "message": "GSTIN format valid but verification API unreachable."}], None
+
+    if outcome == "inactive":
+        return [{
+            "code": unverified_code,
+            "severity": "INFO",
+            "message": "GSTIN could not be confirmed as active. Verify status manually before claiming ITC.",
+        }], None
+
+    # outcome == "success" — GSTIN confirmed active; data is guaranteed non-None here
+    assert data is not None
     flags: list[dict] = []
 
-    # Name mismatch check (supplier only, using tradeName from API)
     if check_name:
         trade_name = (data.get("tradeName") or "").strip()
         if trade_name and supplier_name:
@@ -465,14 +481,12 @@ async def _validate_via_api(
             except ImportError:
                 logger.warning("rapidfuzz not installed; skipping name-mismatch check")
 
-    # E-invoice mandate status
     einv_status = data.get("einvStatus", "")
     einvoice_mandatory: Optional[bool] = None
     if einv_status == "Y":
         einvoice_mandatory = True
     elif einv_status == "N":
         einvoice_mandatory = False
-    # Any other value (blank, unknown) → leave as None
 
     return flags, einvoice_mandatory
 
