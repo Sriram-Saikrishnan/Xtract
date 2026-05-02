@@ -345,9 +345,8 @@ async def _fetch_gstin_data(gstin: str) -> tuple[str, Optional[dict]]:
     Fetch GSTIN via GSTINCheck API with up to 3 attempts and backoff on flag:false.
 
     Outcomes:
-      "success"     — flag:true + authStatus:A  (response cached and returned)
+      "success"     — flag:true (GSTIN found in govt database; response cached)
       "not_found"   — all 3 attempts returned flag:false
-      "inactive"    — flag:true but authStatus != A (definitive; no retry)
       "mixed"       — some flag:false + some errors (inconsistent API responses)
       "unreachable" — all 3 attempts failed with exception or timeout
     """
@@ -388,11 +387,8 @@ async def _fetch_gstin_data(gstin: str) -> tuple[str, Optional[dict]]:
 
             auth = data.get("authStatus", "")
             logger.info(f"GSTIN {gstin} attempt {attempt}: flag=true authStatus={auth!r}")
-            if auth == "A":
-                _cache.set(gstin, data)
-                return "success", data
-            # flag:true but not confirmed active — stop retrying, return as inactive
-            return "inactive", None
+            _cache.set(gstin, data)
+            return "success", data
 
         except httpx.TimeoutException:
             logger.info(f"GSTIN {gstin} attempt {attempt}: timeout")
@@ -450,43 +446,41 @@ async def _validate_via_api(
         return [{"code": unverified_code, "severity": "INFO",
                  "message": "GSTIN format valid but verification API unreachable."}], None
 
-    if outcome == "inactive":
-        return [{
-            "code": unverified_code,
-            "severity": "INFO",
-            "message": "GSTIN could not be confirmed as active. Verify status manually before claiming ITC.",
-        }], None
-
-    # outcome == "success" — GSTIN confirmed active; data is guaranteed non-None here
+    # outcome == "success" — GSTIN found in government database (flag=true).
+    # API response structure: {"flag": true, "data": {"authStatus": "A", "tradeName": "...", ...}}
+    # All status fields are nested under response["data"], not at the top level.
     assert data is not None
+    nested = data.get("data") or {}
     flags: list[dict] = []
-
-    if check_name:
-        trade_name = (data.get("tradeName") or "").strip()
-        if trade_name and supplier_name:
-            try:
-                from rapidfuzz import fuzz
-                score = fuzz.token_sort_ratio(supplier_name.strip(), trade_name)
-                if score < 75:
-                    flags.append({
-                        "code": "GSTIN_NAME_MISMATCH",
-                        "severity": "WARNING",
-                        "message": (
-                            f"Supplier name '{supplier_name}' does not match "
-                            f"government records '{trade_name}'. "
-                            "Could be trade name vs legal name difference. "
-                            "Verify with supplier."
-                        ),
-                    })
-            except ImportError:
-                logger.warning("rapidfuzz not installed; skipping name-mismatch check")
-
-    einv_status = data.get("einvStatus", "")
     einvoice_mandatory: Optional[bool] = None
-    if einv_status == "Y":
-        einvoice_mandatory = True
-    elif einv_status == "N":
-        einvoice_mandatory = False
+
+    if nested.get("authStatus") == "A":
+        # Confirmed active — run name check and read e-invoice mandate
+        if check_name:
+            trade_name = (nested.get("tradeName") or "").strip()
+            if trade_name and supplier_name:
+                try:
+                    from rapidfuzz import fuzz  # type: ignore[import]
+                    score = fuzz.token_sort_ratio(supplier_name.strip(), trade_name)
+                    if score < 75:
+                        flags.append({
+                            "code": "GSTIN_NAME_MISMATCH",
+                            "severity": "WARNING",
+                            "message": (
+                                f"Supplier name '{supplier_name}' does not match "
+                                f"government records '{trade_name}'. "
+                                "Could be trade name vs legal name difference. "
+                                "Verify with supplier."
+                            ),
+                        })
+                except ImportError:
+                    logger.warning("rapidfuzz not installed; skipping name-mismatch check")
+
+        einv_status = nested.get("einvStatus", "")
+        if einv_status == "Y":
+            einvoice_mandatory = True
+        elif einv_status == "N":
+            einvoice_mandatory = False
 
     return flags, einvoice_mandatory
 
