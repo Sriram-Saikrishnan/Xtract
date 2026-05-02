@@ -461,7 +461,7 @@ async def _validate_via_api(
             if trade_name and supplier_name:
                 try:
                     from rapidfuzz import fuzz  # type: ignore[import]
-                    score = fuzz.token_sort_ratio(supplier_name.strip(), trade_name)
+                    score = fuzz.token_sort_ratio(supplier_name.strip().lower(), trade_name.lower())
                     if score < 75:
                         flags.append({
                             "code": "GSTIN_NAME_MISMATCH",
