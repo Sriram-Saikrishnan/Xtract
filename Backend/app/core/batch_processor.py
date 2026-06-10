@@ -12,6 +12,7 @@ from app.core.duplicate import check_duplicate
 from app.core.extractor import normalize
 from app.core.gemini_client import extract_bill, get_mime_type, split_pdf_pages
 from app.core.gstin_validator import validate_gstin, validate_buyer_gstin
+from app.core.tax_validator import validate_tax
 from app.core.job_store import job_store
 from app.core.verifier import verify
 from app.core.storage import upload_excel
@@ -176,7 +177,8 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
         })
         gstin_result = await validate_gstin(bill.supplier_gstin, bill.supplier_name)
         buyer_flags = await validate_buyer_gstin(bill.buyer_gstin)
-        gstin_flag_codes.append([f["code"] for f in gstin_result.flags + buyer_flags])
+        tax_flags = validate_tax(bill)
+        gstin_flag_codes.append([f["code"] for f in gstin_result.flags + buyer_flags + tax_flags])
         einvoice_flags.append(gstin_result.einvoice_mandatory)
 
     await job_store.push_event(job_id, "stage_complete", {

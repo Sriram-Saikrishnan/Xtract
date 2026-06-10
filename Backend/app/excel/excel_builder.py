@@ -1,6 +1,8 @@
+import io
 import uuid
 import logging
 from pathlib import Path
+from typing import List
 
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -12,6 +14,22 @@ from app.database import AsyncSessionLocal, InvoiceORM
 from app.excel import sheet_line_items, sheet_summary, sheet_gst, sheet_flagged
 
 logger = logging.getLogger(__name__)
+
+
+def build_workbook(invoices: List[InvoiceORM]) -> Workbook:
+    wb = Workbook()
+    wb.remove(wb.active)
+    sheet_line_items.build_sheet(wb, invoices)
+    sheet_gst.build_sheet(wb, invoices)
+    sheet_summary.build_sheet(wb, invoices)
+    sheet_flagged.build_sheet(wb, invoices)
+    return wb
+
+
+def workbook_to_bytes(wb: Workbook) -> bytes:
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 async def build_excel(job_id: str) -> Path:
@@ -28,14 +46,7 @@ async def build_excel(job_id: str) -> Path:
         )
         invoices = result.scalars().all()
 
-    wb = Workbook()
-    wb.remove(wb.active)
-
-    sheet_line_items.build_sheet(wb, invoices)
-    sheet_gst.build_sheet(wb, invoices)
-    sheet_summary.build_sheet(wb, invoices)
-    sheet_flagged.build_sheet(wb, invoices)
-
+    wb = build_workbook(invoices)
     wb.save(str(output_path))
     logger.info(f"Excel saved: {output_path} ({len(invoices)} invoices)")
     return output_path

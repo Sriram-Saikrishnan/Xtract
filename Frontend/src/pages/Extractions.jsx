@@ -4,7 +4,124 @@ import StatusBadge from '../components/StatusBadge';
 import ConfBadge from '../components/ConfBadge';
 import FileIcon from '../components/FileIcon';
 import ConfirmDeleteModal from '../components/ConfirmDeleteModal';
-import { apiFetch, downloadExcel, fmt, fmtDate } from '../utils/formatters';
+import { apiFetch, downloadExcel, fmt, fmtDate, API_BASE } from '../utils/formatters';
+
+const TOKEN_KEY = 'xtract_token';
+
+function toLocalDateString(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function MasterExcelModal({ onClose, toast }) {
+  const [range, setRange] = useState('30');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const today = toLocalDateString(new Date());
+
+  const getDateRange = () => {
+    if (range === 'custom') return { start: fromDate, end: toDate };
+    const end = new Date();
+    const start = new Date();
+    start.setDate(start.getDate() - parseInt(range, 10));
+    return { start: toLocalDateString(start), end: toLocalDateString(end) };
+  };
+
+  const handleExport = async () => {
+    const { start, end } = getDateRange();
+    if (!start || !end) { toast('Please select a date range.'); return; }
+    if (start > end) { toast('Start date must be before end date.'); return; }
+    setLoading(true);
+    try {
+      const token = localStorage.getItem(TOKEN_KEY);
+      const res = await fetch(
+        `${API_BASE}/download/master?start_date=${start}&end_date=${end}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.status === 404) { toast('No invoices found in the selected date range.'); return; }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast(err.detail || 'Export failed'); return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Xtract_Master_${start}_to_${end}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      onClose();
+      toast('Master Excel downloaded');
+    } catch {
+      toast('Export failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="row between" style={{ marginBottom: 20 }}>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 16, letterSpacing: '-0.02em', marginBottom: 2 }}>Master Excel Export</div>
+            <div style={{ color: 'var(--text-3)', fontSize: 12.5 }}>Download all invoices for a date range</div>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} style={{ padding: '4px 8px', fontSize: 16 }}>✕</button>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-3)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Quick Range</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {[['7', 'Last 7 days'], ['30', 'Last 30 days'], ['60', 'Last 60 days'], ['90', 'Last 90 days'], ['custom', 'Custom']].map(([val, label]) => (
+                <button
+                  key={val}
+                  className={`btn btn-sm ${range === val ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => setRange(val)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {range === 'custom' ? (
+            <div style={{ display: 'flex', gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 4 }}>From</div>
+                <input type="date" className="input" max={today} value={fromDate} onChange={e => setFromDate(e.target.value)} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 4 }}>To</div>
+                <input type="date" className="input" max={today} value={toDate} onChange={e => setToDate(e.target.value)} />
+              </div>
+            </div>
+          ) : (
+            <div style={{ background: 'var(--surface)', border: '0.5px solid var(--border)', borderRadius: 10, padding: '10px 14px', fontSize: 13, color: 'var(--text-2)' }}>
+              {(() => { const { start, end } = getDateRange(); return <>{fmtDate(start)} <span style={{ color: 'var(--text-3)' }}>→</span> {fmtDate(end)}</>; })()}
+            </div>
+          )}
+        </div>
+
+        <div className="row gap-2" style={{ justifyContent: 'flex-end', marginTop: 24 }}>
+          <button className="btn btn-ghost" onClick={onClose} disabled={loading}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleExport} disabled={loading} style={{ minWidth: 160, justifyContent: 'center' }}>
+            {loading
+              ? <><span className="spinner" style={{ borderColor: 'rgba(255,255,255,0.3)', borderTopColor: '#fff' }}></span> Exporting…</>
+              : <><Ic.download style={{ width: 13, height: 13 }} /> Export Master Excel</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function Extractions({ navigate, toast, highlightJobId }) {
   const [jobs, setJobs] = useState([]);
@@ -15,6 +132,7 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
   const [search, setSearch] = useState('');
   const [deleteModal, setDeleteModal] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [masterModal, setMasterModal] = useState(false);
 
   useEffect(() => {
     apiFetch('/jobs')
@@ -72,9 +190,14 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
           <h1 className="page-title">Extractions</h1>
           <p className="page-sub">All jobs and extracted invoices.</p>
         </div>
-        <button className="btn btn-primary" onClick={() => navigate('upload')}>
-          <Ic.plus style={{ width: 14, height: 14 }} /> New batch
-        </button>
+        <div className="row gap-2">
+          <button className="btn btn-secondary" onClick={() => setMasterModal(true)}>
+            <Ic.download style={{ width: 14, height: 14 }} /> Master Excel
+          </button>
+          <button className="btn btn-primary" onClick={() => navigate('upload')}>
+            <Ic.plus style={{ width: 14, height: 14 }} /> New batch
+          </button>
+        </div>
       </div>
 
       <div className="filter-bar">
@@ -180,6 +303,8 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
         onCancel={() => !deleting && setDeleteModal(null)}
         loading={deleting}
       />
+
+      {masterModal && <MasterExcelModal onClose={() => setMasterModal(false)} toast={toast} />}
     </div>
   );
 }
