@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 <!-- claude-config -->
 ```yaml
-main_branch: main
+main_branch: dev
 work_items_dir: .notes/Agile
 build_cmd: cd Frontend && npm run build
 test_cmd: cd Backend && python -m pytest tests/

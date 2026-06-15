@@ -4,7 +4,6 @@ import { API_BASE, downloadExcel } from '../utils/formatters';
 
 const STAGES = [
   { id: 'extraction', label: 'Extraction',          desc: 'Extracting data from documents' },
-  { id: 'gstin',      label: 'GSTIN Verification',  desc: 'Verifying supplier GSTINs with govt API' },
   { id: 'compliance', label: 'Compliance Checks',   desc: 'Math validation and duplicate detection' },
   { id: 'excel',      label: 'Excel Report',        desc: 'Building and uploading results' },
 ];
@@ -32,7 +31,6 @@ function fmtFinal(ms) {
 export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
   const [stages, setStages] = useState({
     extraction: { ...INIT_STAGE },
-    gstin:      { ...INIT_STAGE },
     compliance: { ...INIT_STAGE },
     excel:      { ...INIT_STAGE },
   });
