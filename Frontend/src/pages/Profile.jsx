@@ -7,11 +7,38 @@ export default function Profile({ navigate, toast }) {
   const { user, logout, updateUser } = useAuth();
   const [name, setName] = useState(user?.name || '');
   const [saving, setSaving] = useState(false);
+  const [companyName, setCompanyName] = useState(user?.company_name || '');
+  const [companyAddress, setCompanyAddress] = useState(user?.company_address || '');
+  const [companyPhone, setCompanyPhone] = useState(user?.company_phone || '');
+  const [savingCompany, setSavingCompany] = useState(false);
   const [prefs, setPrefs] = useState({ threshold: 85, emailComplete: true, emailFail: true, weeklyDigest: false });
 
   const initials = user?.name
     ? user.name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)
     : (user?.email?.[0] || 'U').toUpperCase();
+
+  const saveCompany = async () => {
+    if (companyPhone) {
+      const digits = companyPhone.replace(/[\s+\-()]/g, '');
+      const valid = /^\d{7,15}$/.test(digits);
+      if (!valid) { toast('Invalid phone number'); return; }
+    }
+    setSavingCompany(true);
+    try {
+      const res = await apiFetch('/auth/profile', {
+        method: 'PATCH',
+        body: JSON.stringify({ company_name: companyName, company_address: companyAddress, company_phone: companyPhone }),
+      });
+      if (!res.ok) throw new Error('Save failed');
+      const updated = await res.json();
+      updateUser(updated);
+      toast('Company info saved');
+    } catch (e) {
+      toast('Error: ' + e.message);
+    } finally {
+      setSavingCompany(false);
+    }
+  };
 
   const saveProfile = async () => {
     setSaving(true);
@@ -64,6 +91,30 @@ export default function Profile({ navigate, toast }) {
           <button className="btn btn-ghost" onClick={() => setName(user?.name || '')}>Cancel</button>
           <button className="btn btn-primary" disabled={saving} onClick={saveProfile}>
             {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+
+      <div className="card section mb-3">
+        <h3>Company information</h3>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          <div className="form-row" style={{ gridColumn: '1 / -1' }}>
+            <label>Company name</label>
+            <input className="input" value={companyName} onChange={e => setCompanyName(e.target.value)} placeholder="Your company name" />
+          </div>
+          <div className="form-row" style={{ gridColumn: '1 / -1' }}>
+            <label>Address</label>
+            <input className="input" value={companyAddress} onChange={e => setCompanyAddress(e.target.value)} placeholder="Company address" />
+          </div>
+          <div className="form-row">
+            <label>Phone number</label>
+            <input className="input" value={companyPhone} onChange={e => setCompanyPhone(e.target.value)} placeholder="+91 98765 43210" />
+          </div>
+        </div>
+        <div className="row" style={{ justifyContent: 'flex-end', gap: 8 }}>
+          <button className="btn btn-ghost" onClick={() => { setCompanyName(user?.company_name || ''); setCompanyAddress(user?.company_address || ''); setCompanyPhone(user?.company_phone || ''); }}>Cancel</button>
+          <button className="btn btn-primary" disabled={savingCompany} onClick={saveCompany}>
+            {savingCompany ? 'Saving…' : 'Save'}
           </button>
         </div>
       </div>

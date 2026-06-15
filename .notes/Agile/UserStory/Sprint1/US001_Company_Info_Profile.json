@@ -1,0 +1,98 @@
+{
+  "id": "US001",
+  "workItemType": "User Story",
+  "Title": "Add company info section to profile page",
+  "Description": "Users should be able to add and manage company details from their profile page. This includes company name, address, and phone number. Data is persisted to the database and can be edited at any time.",
+  "AcceptanceCriteria": [
+    "Profile page displays a Company Information section",
+    "User can enter and edit company name, address, and phone number",
+    "Company data is saved to the backend and persisted in the database",
+    "Form validation enforces required fields and validates phone number format",
+    "User receives clear success or error feedback when saving company information"
+  ],
+  "Planning": {
+    "StoryPoints": 5,
+    "Priority": 2
+  },
+  "Classification": {
+    "RemainingWork": 16.0
+  },
+  "Tags": ["profile", "user-settings", "company-info", "frontend", "backend"],
+  "TalkingPoints": "Add a company information section to the profile page so users can store their business details. This involves frontend form work, backend schema updates, and database migrations. Next: design the schema and create API endpoint.",
+  "Tasks": [
+    {
+      "Title": "Update database schema to add company fields",
+      "Description": "Add company_name, company_address, and company_phone columns to the users table in Supabase.",
+      "Planning": {
+        "Priority": 2,
+        "Activity": "Development"
+      },
+      "Efforts": {
+        "OriginalEstimate": 2.0
+      },
+      "Tags": ["backend", "database"]
+    },
+    {
+      "Title": "Create backend API endpoint for company info",
+      "Description": "Add PATCH /auth/profile endpoint to update company details. Include validation for phone number format and required fields.",
+      "Planning": {
+        "Priority": 2,
+        "Activity": "Development"
+      },
+      "Efforts": {
+        "OriginalEstimate": 4.0
+      },
+      "Tags": ["backend", "api"]
+    },
+    {
+      "Title": "Update Pydantic models for company fields",
+      "Description": "Modify UserUpdate and UserResponse models to include company_name, company_address, and company_phone.",
+      "Planning": {
+        "Priority": 2,
+        "Activity": "Development"
+      },
+      "Efforts": {
+        "OriginalEstimate": 1.0
+      },
+      "Tags": ["backend"]
+    },
+    {
+      "Title": "Build company info form on profile page",
+      "Description": "Add Company Information section to profile page with input fields for name, address, and phone. Include form validation and error messages.",
+      "Planning": {
+        "Priority": 2,
+        "Activity": "Development"
+      },
+      "Efforts": {
+        "OriginalEstimate": 5.0
+      },
+      "Tags": ["frontend", "ui"]
+    },
+    {
+      "Title": "Update AuthContext to include company data",
+      "Description": "Extend AuthContext to store and sync company information from profile updates.",
+      "Planning": {
+        "Priority": 2,
+        "Activity": "Development"
+      },
+      "Efforts": {
+        "OriginalEstimate": 2.0
+      },
+      "Tags": ["frontend"]
+    },
+    {
+      "Title": "Test company info save and validation",
+      "Description": "Verify form validation, API calls, database persistence, and error handling.",
+      "Planning": {
+        "Priority": 2,
+        "Activity": "Testing"
+      },
+      "Efforts": {
+        "OriginalEstimate": 2.0
+      },
+      "Tags": ["testing", "qa"]
+    }
+  ],
+  "createdDate": "2026-06-15",
+  "state": "New"
+}

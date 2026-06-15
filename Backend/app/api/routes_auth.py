@@ -1,7 +1,8 @@
+import re
 import uuid
 import logging
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 
 from app.database import AsyncSessionLocal, UserORM, db_retry
@@ -23,11 +24,31 @@ class LoginRequest(BaseModel):
 
 
 class ProfileUpdate(BaseModel):
-    name: str
+    name: str | None = None
+    company_name: str | None = None
+    company_address: str | None = None
+    company_phone: str | None = None
+
+    @field_validator('company_phone', mode='before')
+    @classmethod
+    def validate_phone(cls, v):
+        if v is None or v == '':
+            return v
+        digits = re.sub(r'[\s\+\-\(\)]', '', v)
+        if not digits.isdigit() or not (7 <= len(digits) <= 15):
+            raise ValueError('Invalid phone number')
+        return v
 
 
 def _user_dict(user: UserORM) -> dict:
-    return {"id": str(user.id), "email": user.email, "name": user.full_name or ""}
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "name": user.full_name or "",
+        "company_name": user.company_name or "",
+        "company_address": user.company_address or "",
+        "company_phone": user.company_phone or "",
+    }
 
 
 @router.post("/signup")
@@ -83,9 +104,17 @@ async def me(current_user: UserORM = Depends(get_current_user)):
 @router.patch("/profile")
 @db_retry()
 async def update_profile(body: ProfileUpdate, current_user: UserORM = Depends(get_current_user)):
+    updates = body.model_dump(exclude_unset=True)
     async with AsyncSessionLocal() as session:
         user = await session.get(UserORM, current_user.id)
-        user.full_name = body.name.strip() or None
+        if 'name' in updates:
+            user.full_name = updates['name'].strip() or None
+        if 'company_name' in updates:
+            user.company_name = updates['company_name'].strip() or None
+        if 'company_address' in updates:
+            user.company_address = updates['company_address'].strip() or None
+        if 'company_phone' in updates:
+            user.company_phone = updates['company_phone'].strip() or None
         await session.commit()
         await session.refresh(user)
     return _user_dict(user)
