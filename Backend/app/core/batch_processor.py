@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.duplicate import check_duplicate
 from app.core.extractor import normalize
 from app.core.gemini_client import extract_bill, get_mime_type, split_pdf_pages
-from app.core.gstin_validator import validate_gstin, validate_buyer_gstin
 from app.core.tax_validator import validate_tax
 from app.core.job_store import job_store
 from app.core.verifier import verify
@@ -160,43 +159,6 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
 
     total_bills = len(all_bills)
 
-    # ── Stage 2: GSTIN Verification ───────────────────────────────────────────
-    t0 = time.monotonic()
-    await job_store.push_event(job_id, "stage_start", {"stage": "gstin", "total": total_bills})
-
-    gstin_flag_codes: List[List[str]] = []
-    einvoice_flags: List = []
-
-    for i, bill in enumerate(all_bills):
-        gstin_label = bill.supplier_gstin or "no GSTIN"
-        await job_store.push_event(job_id, "stage_progress", {
-            "stage": "gstin",
-            "detail": f"Checking {gstin_label} with govt API...",
-            "current": i + 1,
-            "total": total_bills,
-        })
-        gstin_result = await validate_gstin(bill.supplier_gstin, bill.supplier_name)
-        buyer_flags = await validate_buyer_gstin(bill.buyer_gstin)
-        tax_flags = validate_tax(bill)
-        gstin_flag_codes.append([f["code"] for f in gstin_result.flags + buyer_flags + tax_flags])
-        einvoice_flags.append(gstin_result.einvoice_mandatory)
-
-    await job_store.push_event(job_id, "stage_complete", {
-        "stage": "gstin",
-        "duration_ms": int((time.monotonic() - t0) * 1000),
-    })
-
-    # Apply GSTIN flags to bills
-    updated_bills = []
-    for bill, codes, einvoice in zip(all_bills, gstin_flag_codes, einvoice_flags):
-        updates: dict = {}
-        if codes:
-            updates["flags"] = list(bill.flags) + codes
-        if einvoice is not None:
-            updates["einvoice_mandatory"] = einvoice
-        updated_bills.append(bill.model_copy(update=updates) if updates else bill)
-    all_bills = updated_bills
-
     # ── Stage 3: Compliance Checks ────────────────────────────────────────────
     t0 = time.monotonic()
     await job_store.push_event(job_id, "stage_start", {"stage": "compliance", "total": total_bills})
@@ -214,6 +176,9 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
             "total": total_bills,
         })
         bill = verify(bill)
+        tax_flags = [f["code"] for f in validate_tax(bill)]
+        if tax_flags:
+            bill = bill.model_copy(update={"flags": list(bill.flags) + tax_flags})
         bill = check_duplicate(bill, processed_bills)
 
         async with AsyncSessionLocal() as session:
