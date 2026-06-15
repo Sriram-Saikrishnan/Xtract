@@ -16,8 +16,10 @@
 
 | ID | Title | Type | Status |
 |----|-------|------|--------|
-| US001 | Add company info section to profile page | User Story | In Progress |
+| — | — | — | — |
 
 ---
+
+**2026-06-15 (1)**: US002 ✅ Done. Removed GSTIN validation from batch processor and frontend pipeline UI; tax validation preserved in compliance stage.
 
 _Older session notes are deleted. Full history is in git._
