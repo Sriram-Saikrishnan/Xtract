@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<instructions>
+
+  <motivation>
+    Complete the task with production-grade quality. Follow the project CLAUDE.md
+    and global engineering standards. Ask one tight question if anything is unclear.
+  </motivation>
+
+  <task>
+    <type>feature</type>
+
+    <requirements>
+      <feature>In the profile page , add company info section where user should able to add company details. eg : company name, address, phone number</feature>
+      <bug></bug>
+      <refactor></refactor>
+      <docs></docs>
+      <deploy></deploy>
+      <security></security>
+    </requirements>
+
+    <notes></notes>
+  </task>
+
+  <post_task>
+    On completion: present the post-task file table (see global CLAUDE.md) and wait
+    for Alpha's approval. Do NOT invoke /complete-item automatically.
+  </post_task>
+
+</instructions>

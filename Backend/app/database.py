@@ -97,6 +97,9 @@ class UserORM(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     hashed_password = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=True)
+    company_name = Column(String(255), nullable=True)
+    company_address = Column(Text, nullable=True)
+    company_phone = Column(String(50), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     jobs = relationship("JobORM", back_populates="owner", cascade="all, delete-orphan")
@@ -216,6 +219,15 @@ async def init_db(retries: int = 5, backoff: float = 2.0):
                 # Add user_id to jobs table for deployments that existed before auth was added.
                 await conn.execute(text(
                     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS user_id UUID"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS company_name VARCHAR(255)"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS company_address TEXT"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS company_phone VARCHAR(50)"
                 ))
             return
         except Exception as exc:
