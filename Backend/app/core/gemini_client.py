@@ -35,32 +35,75 @@ You are an expert at extracting structured data from Indian manufacturing invoic
 
 {CATEGORY_PROMPT}
 
-CRITICAL: This document may have MULTIPLE PAGES. You MUST read and process EVERY page from start to finish before responding.
-- Scan ALL pages for line items — many invoices continue the items table across pages 2, 3, or more.
+=== BUYER CONTEXT ===
+The company using this system is Moreind Automation Private Limited (also written as "Moreind Automation" or "MOREIND AUTOMATION PRIVATE LIMITED").
+- The BUYER in every document is always Moreind Automation or one of its entities.
+- The SUPPLIER is the OTHER party — the company that issued the invoice/bill to Moreind Automation.
+- Use this context to correctly distinguish supplier vs buyer when the document layout is ambiguous.
+- Never assign Moreind Automation as the supplier_name.
+
+=== READING STRATEGY — DO THIS BEFORE EXTRACTING ===
+Before extracting any field, read and understand the entire document:
+1. Identify the document type (Tax Invoice / Delivery Challan / Proforma / Receipt / etc.)
+2. Identify all parties: who issued the document (supplier) and who received it (buyer/consignee).
+3. Identify the table structure: what columns are present, what units are used (Nos, Kgs, Mtrs, Ltrs, etc.)
+4. Identify the totals section: where taxable value, GST, and grand total are printed.
+5. Only after understanding the full layout, extract each field.
+
+This prevents misreading rotated text, multi-column layouts, or non-standard formats.
+
+=== MULTI-PAGE DOCUMENTS ===
+This document may have MULTIPLE PAGES. Process ALL pages before responding.
 - Header fields (supplier, buyer, invoice number) are usually on page 1.
-- Line items may span ALL pages — do NOT stop at page 1.
+- Line items may span ALL pages — do NOT stop reading at page 1.
 - Totals and GST summary are usually on the LAST page.
+- If the same line item appears continued across pages, merge into one entry — do not duplicate.
 
-Extract ALL fields from this document and return ONLY a valid JSON object with no markdown, no explanation, no code fences.
+=== SUPPLIER NAME EXTRACTION ===
+The supplier is the entity that ISSUED this document (printed at the top/header as "From" or "Sold by" or simply the company letterhead).
+- Read the full legal name as printed — include "Private Limited", "Pvt. Ltd.", "LLP", etc.
+- Do not abbreviate or guess. Copy exactly as it appears.
+- If the name appears both in the header and in a stamp/seal, prefer the printed header text.
+- The buyer (Moreind Automation) will appear in the "Ship To" / "Bill To" / "Consignee" section — that is NOT the supplier.
 
-Rules:
+=== QUANTITY AND WEIGHT FIELDS ===
+Indian manufacturing invoices often print BOTH piece count and weight in the same quantity column, e.g.:
+  "35,000 Nos / 97,600 Kgs"   or   "100,000 Nos / 855,500 Kgs"   or   "22,000 Nos / 1,65,000 Kgs"
+  Sometimes only weight is given: "269.900 Kgs"
+  Sometimes only count is given: "100 Nos"
+
+For each line item:
+- `quantity`: extract the piece count (Nos / Pcs / Units). Use 0.0 if only weight is present.
+- `quantity_unit`: the unit of the piece count ("Nos", "Pcs", "Mtrs", "Ltrs", etc.). Null if no piece count.
+- `weight_kg`: extract the weight in kilograms as a float. Use 0.0 if not present. Convert if needed (1 MT = 1000 Kg).
+- `total_weight_kg` at the document level: sum of all line item weights.
+
+=== TAX TYPE AUTO-DETECTION ===
+- If supplier state == buyer state → CGST + SGST (intra-state)
+- If supplier state != buyer state → IGST (inter-state)
+- Derive from the state fields or from which tax columns are populated in the document.
+
+=== GSTIN EXTRACTION ===
+- A valid Indian GSTIN is exactly 15 characters matching: 2-digit state code + 10-char PAN + 1 entity type char + 1 check char.
+- Read the entire document for GSTINs — they can appear in the header, footer, terms section, or stamp area.
+- supplier_gstin: the GSTIN belonging to the supplier (the issuer of the document).
+- buyer_gstin: the GSTIN belonging to the buyer/consignee (Moreind Automation).
+- Only populate if you can read the value with high confidence. Do not guess or reconstruct partial values.
+
+=== EXTRACTION RULES ===
 1. All monetary values must be numbers (float), NEVER strings. Use 0.0 if not found.
 2. Dates must be in DD/MM/YYYY format.
-3. Auto-detect tax type: use "IGST" if supplier and buyer are in different states, "CGST+SGST" if same state.
-4. Extract ALL line items from ALL pages — never skip any rows from any page of the items table.
-5. Pick category from the list above based on document content, NOT from filename.
-6. confidence_score: your own assessment from 0.0 to 1.0 of how accurately you extracted the data.
-7. Return null for fields you cannot find — never guess invoice numbers or amounts.
-8. HSN/SAC codes are 4-8 digit numbers on Indian invoices.
-9. GSTIN EXTRACTION — read the ENTIRE document, not just the header:
-   - A valid GSTIN matches the pattern: [0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]
-   - GSTINs can appear ANYWHERE: header, footer, stamp area, terms section, bank details block, or the bottom of the last page.
-   - If multiple GSTINs are present, the supplier GSTIN is the one associated with the seller/supplier entity; the buyer GSTIN is associated with the purchaser/consignee.
-   - NEVER leave supplier_gstin or buyer_gstin null if a 15-character code matching the above pattern exists anywhere on the document.
-   - If you see a GSTIN near words like "GSTIN", "GST No", "GST Reg No", "Tax ID" — that is the supplier GSTIN.
-10. If the same line item appears continued across pages, merge it into one entry — do not duplicate.
+3. Extract ALL line items from ALL pages — never skip rows.
+4. Pick category from the list above based on document content, NOT from filename.
+5. `confidence_score`: your assessment from 0.0 to 1.0 of overall extraction accuracy.
+6. Return null for fields you cannot find — never guess invoice numbers, amounts, or GSTINs.
+7. HSN/SAC codes are 4–8 digit numbers. Do not confuse them with PO numbers or part numbers.
+8. `rate` is the per-unit price (per Nos or per Kg, as printed). Capture the unit context in `quantity_unit`.
+9. Do not produce false positives: if a field is unclear or ambiguous, return null rather than a guess.
 
-Return this exact JSON structure:
+=== OUTPUT FORMAT ===
+Return ONLY a valid JSON object. No markdown, no explanation, no code fences.
+
 {{
   "category": "string",
   "invoice_number": "string or null",
@@ -108,6 +151,8 @@ Return this exact JSON structure:
       "hsn_sac_code": "string or null",
       "grade": "string or null",
       "quantity": 0.0,
+      "quantity_unit": "string or null",
+      "weight_kg": 0.0,
       "rate": 0.0,
       "amount": 0.0
     }}
