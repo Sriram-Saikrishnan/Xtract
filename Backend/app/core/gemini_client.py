@@ -87,6 +87,16 @@ For each line item:
 - buyer_gstin: the GSTIN belonging to the buyer/consignee.
 - Only populate if you can read the value with high confidence. Do not guess or reconstruct partial values.
 
+=== IMAGE ORIENTATION ===
+The document image may be rotated (90°, 180°, 270°) or slightly skewed.
+- Before reading any field, determine the correct reading orientation by 
+  locating the document title ("Tax Invoice", "Delivery Challan") and 
+  company letterhead — these are always at the TOP of the document.
+- Mentally rotate the image to upright before extracting any field.
+- Do not let rotation cause you to swap supplier/buyer, misread numbers 
+  as different digits, or miss columns in the line items table.
+- Skew or tilt of up to ~15° should not affect extraction — read through it.
+
 === EXTRACTION RULES ===
 1. All monetary values must be numbers (float), NEVER strings. Use 0.0 if not found.
 2. Dates must be in DD/MM/YYYY format.
