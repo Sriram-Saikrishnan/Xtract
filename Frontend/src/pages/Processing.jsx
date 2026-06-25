@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { Ic } from '../components/icons';
-import { API_BASE, downloadExcel } from '../utils/formatters';
+import { API_BASE, apiFetch, downloadExcel } from '../utils/formatters';
+
+const ACTIVE_JOB_KEY = 'billscan_active_job_id';
+const TERMINAL_STATUSES = ['done', 'completed_with_errors', 'error'];
+const STATUS_POLL_MS = 3000;
 
 const STAGES = [
   { id: 'extraction', label: 'Extraction',          desc: 'Extracting data from documents' },
@@ -35,15 +39,41 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
     excel:      { ...INIT_STAGE },
   });
   const [completionData, setCompletionData] = useState(null);
-  const [isDone, setIsDone] = useState(false);
-  const [isError, setIsError] = useState(false);
+  const [jobStatus, setJobStatus] = useState('processing'); // processing | done | completed_with_errors | error
   const [finalDuration, setFinalDuration] = useState(null);
+  const [pageProgress, setPageProgress] = useState({ completed: 0, total: 0 });
   const [now, setNow] = useState(Date.now());
   const timerRef = useRef(null);
   const esRef = useRef(null);
+  const pollRef = useRef(null);
+  const finishedRef = useRef(false);
 
+  const isDone = jobStatus === 'done' || jobStatus === 'completed_with_errors';
+  const isPartial = jobStatus === 'completed_with_errors';
+  const isError = jobStatus === 'error';
+
+  // Single entry point for reaching a terminal state, whichever source (SSE
+  // or DB poll) detects it first. Guarded so it only runs once.
+  const finish = (status, data) => {
+    if (finishedRef.current) return;
+    finishedRef.current = true;
+    setJobStatus(status);
+    setCompletionData(data);
+    if (data?.duration_ms != null) setFinalDuration(data.duration_ms);
+    localStorage.removeItem(ACTIVE_JOB_KEY);
+    clearInterval(timerRef.current);
+    clearInterval(pollRef.current);
+    if (esRef.current) esRef.current.close();
+  };
+
+  // ── SSE: live per-stage narration ───────────────────────────────────────
   useEffect(() => {
     if (!jobId) { navigate('dashboard'); return; }
+
+    // Re-affirm persistence — covers the case where jobId arrived via
+    // navigation state but Upload.jsx's write hasn't happened (e.g. resumed
+    // from an older tab) and the case where the user navigates away and back.
+    localStorage.setItem(ACTIVE_JOB_KEY, jobId);
 
     const token = localStorage.getItem('xtract_token');
     const es = new EventSource(`${API_BASE}/stream/${jobId}?token=${encodeURIComponent(token)}`);
@@ -77,22 +107,60 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
 
     es.addEventListener('processing_complete', (e) => {
       const data = JSON.parse(e.data);
-      setCompletionData(data);
-      setFinalDuration(data.duration_ms);
-      setIsDone(!data.error);
-      setIsError(!!data.error);
-      clearInterval(timerRef.current);
-      es.close();
+      // SSE has no notion of completed_with_errors — fall back to "errors > 0"
+      // as a best-effort guess; the DB poll below will correct this if it
+      // lands first or shortly after with the authoritative status string.
+      const status = data.error ? 'error' : (data.errors > 0 ? 'completed_with_errors' : 'done');
+      finish(status, data);
     });
 
     es.onerror = () => {
-      // SSE connection lost — UI will stay in last-known state
+      // SSE connection lost — the status poll below keeps the UI moving.
     };
 
     return () => {
       es.close();
       clearInterval(timerRef.current);
     };
+  }, [jobId]);
+
+  // ── DB-backed status poll: progress bar + authoritative terminal state ──
+  useEffect(() => {
+    if (!jobId) return;
+
+    const poll = async () => {
+      try {
+        const res = await apiFetch(`/status/${jobId}`);
+        if (res.status === 404) {
+          localStorage.removeItem(ACTIVE_JOB_KEY);
+          clearInterval(pollRef.current);
+          toast('Previous job not found');
+          navigate('dashboard');
+          return;
+        }
+        if (!res.ok) return; // transient — retry next tick
+
+        const data = await res.json();
+        setPageProgress({ completed: data.completed_pages, total: data.total_pages });
+
+        if (TERMINAL_STATUSES.includes(data.status)) {
+          finish(data.status, {
+            verified: data.verified_count,
+            flagged: data.flagged_count,
+            errors: data.error_count,
+            completed_pages: data.completed_pages,
+            failed_pages: data.failed_pages,
+            total_pages: data.total_pages,
+          });
+        }
+      } catch {
+        // network blip — next poll retries
+      }
+    };
+
+    poll();
+    pollRef.current = setInterval(poll, STATUS_POLL_MS);
+    return () => clearInterval(pollRef.current);
   }, [jobId]);
 
   const globalElapsed = finalDuration != null
@@ -102,6 +170,10 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
   const summary = completionData
     ? `${completionData.verified} verified · ${completionData.flagged} flagged · ${completionData.errors} errors`
     : '';
+
+  const progressPct = pageProgress.total > 0
+    ? Math.round((pageProgress.completed / pageProgress.total) * 100)
+    : 0;
 
   return (
     <div className="page">
@@ -116,7 +188,7 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
       <div className="page-header">
         <div>
           <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            {isDone ? 'Extraction complete' : isError ? 'Extraction failed' : 'Extracting documents'}
+            {isPartial ? 'Extraction completed with errors' : isDone ? 'Extraction complete' : isError ? 'Extraction failed' : 'Extracting documents'}
             {!isDone && !isError && <span className="pulse-dot"></span>}
           </h1>
           <p className="page-sub">
@@ -137,6 +209,36 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
           </div>
         )}
       </div>
+
+      {isPartial && (
+        <div className="card mb-3" style={{ borderColor: 'var(--orange, #d97706)' }}>
+          <div className="card-pad" style={{ fontSize: 13.5 }}>
+            <strong>Partial success:</strong>{' '}
+            {completionData?.completed_pages ?? pageProgress.completed} of {completionData?.total_pages ?? pageProgress.total} pages extracted successfully,{' '}
+            {completionData?.failed_pages ?? 0} failed. The Excel report includes everything that succeeded — download is still available above.
+          </div>
+        </div>
+      )}
+
+      {/* Overall progress bar — driven by the DB-backed /status endpoint */}
+      {!isDone && !isError && (
+        <div className="card mb-3">
+          <div className="card-pad">
+            <div className="row between" style={{ marginBottom: 6, fontSize: 12.5 }}>
+              <span className="muted">Overall progress</span>
+              <span className="muted">{pageProgress.completed} / {pageProgress.total || '…'} pages</span>
+            </div>
+            <div style={{ height: 8, borderRadius: 4, background: 'var(--bg-2, #eee)', overflow: 'hidden' }}>
+              <div style={{
+                height: '100%',
+                width: `${progressPct}%`,
+                background: 'var(--accent, #2563eb)',
+                transition: 'width 0.3s ease',
+              }} />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Stage progress */}
       <div className="card mb-3">

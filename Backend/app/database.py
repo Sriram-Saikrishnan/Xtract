@@ -116,12 +116,16 @@ class JobORM(Base):
     verified_count = Column(Integer, default=0)
     flagged_count = Column(Integer, default=0)
     error_count = Column(Integer, default=0)
+    total_pages = Column(Integer, default=0)
+    completed_pages = Column(Integer, default=0)
+    failed_pages = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
     excel_path = Column(String(512), nullable=True)
 
     owner = relationship("UserORM", back_populates="jobs")
     invoices = relationship("InvoiceORM", back_populates="job", cascade="all, delete-orphan")
+    pages = relationship("JobPageORM", back_populates="job", cascade="all, delete-orphan")
 
 
 class InvoiceORM(Base):
@@ -191,6 +195,25 @@ class LineItemORM(Base):
     amount = Column(Float, default=0.0)
 
     invoice = relationship("InvoiceORM", back_populates="line_items")
+
+
+class JobPageORM(Base):
+    __tablename__ = "job_pages"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    page_index = Column(Integer, nullable=False)
+    filename = Column(String(512), nullable=False)
+    page_label = Column(String(512), nullable=False)
+    status = Column(String(20), nullable=False, default="queued")  # queued | processing | done | failed
+    error_message = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "page_index", name="uq_job_pages_job_page"),
+    )
+
+    job = relationship("JobORM", back_populates="pages")
 
 
 class GeminiQuotaORM(Base):

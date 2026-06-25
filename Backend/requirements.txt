@@ -24,3 +24,4 @@ rapidfuzz>=3.0.0
 
 pytest==8.2.0
 pytest-asyncio==0.23.6
+aiosqlite==0.20.0

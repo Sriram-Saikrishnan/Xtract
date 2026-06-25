@@ -73,8 +73,8 @@ def test_line_items_sheet_created():
     wb.remove(wb.active)
     invoices = [make_mock_invoice()]
     sheet_line_items.build_sheet(wb, invoices)
-    assert "Line Items" in wb.sheetnames
-    ws = wb["Line Items"]
+    assert "Items" in wb.sheetnames
+    ws = wb["Items"]
     assert ws.max_row == 2
 
 

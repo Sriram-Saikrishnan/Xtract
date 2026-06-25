@@ -18,6 +18,9 @@ class JobStatusResponse(BaseModel):
     verified_count: int
     flagged_count: int
     error_count: int
+    total_pages: int = 0
+    completed_pages: int = 0
+    failed_pages: int = 0
     created_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     excel_ready: bool = False

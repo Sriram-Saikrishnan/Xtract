@@ -26,6 +26,15 @@ class Settings(BaseSettings):
     RETRY_WAIT_SECONDS: int = 90
     CONFIDENCE_THRESHOLD: float = 0.75
 
+    # Gemini quota (Tier 1 billing: 4000 RPM, unlimited RPD — 90% safety buffer applied)
+    GEMINI_RPM_CAP: int = 3600
+    GEMINI_DAILY_CAP_ENABLED: bool = False
+    GEMINI_RPD_CAP: int = 450
+
+    # Concurrency caps (sized for 512MB Render instance + 15-connection Supabase PgBouncer pool)
+    MAX_CONCURRENT_EXTRACTIONS: int = 6
+    MAX_CONCURRENT_DB_WRITES: int = 6
+
     # File handling
     UPLOAD_DIR: str = "/tmp/billscan/uploads"
     OUTPUT_DIR: str = "/tmp/billscan/outputs"

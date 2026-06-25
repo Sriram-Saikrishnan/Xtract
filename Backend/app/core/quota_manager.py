@@ -4,15 +4,12 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
+from app.config import settings
 from app.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
-# Free tier limits for Tier 1 (billing enabled)
-# Actual limits: 10 RPM, 500 RPD for gemini-2.5-flash
-# We enforce 90% of each to maintain a safety buffer
-FREE_TIER_RPM = 9    # actual: 10
-FREE_TIER_RPD = 450  # actual: 500
+# Limits are env-driven via settings (see config.py: GEMINI_RPM_CAP, GEMINI_DAILY_CAP_ENABLED, GEMINI_RPD_CAP)
 
 
 class DailyQuotaExceededError(Exception):
@@ -72,7 +69,8 @@ class QuotaManager:
                 daily = next((r.request_count for r in rows if r.window_type == "daily"), 0)
                 minute = next((r.request_count for r in rows if r.window_type == "minute"), 0)
 
-                if daily >= FREE_TIER_RPD or minute >= FREE_TIER_RPM:
+                daily_exceeded = settings.GEMINI_DAILY_CAP_ENABLED and daily >= settings.GEMINI_RPD_CAP
+                if daily_exceeded or minute >= settings.GEMINI_RPM_CAP:
                     # Transaction rolls back — no increment
                     return False, {"daily": daily, "minute": minute}
 
@@ -103,13 +101,13 @@ class QuotaManager:
 
             if allowed:
                 logger.debug(
-                    f"Quota reserved — daily: {usage['daily']}/{FREE_TIER_RPD}, "
-                    f"minute: {usage['minute']}/{FREE_TIER_RPM}"
+                    f"Quota reserved — daily: {usage['daily']}/{settings.GEMINI_RPD_CAP}, "
+                    f"minute: {usage['minute']}/{settings.GEMINI_RPM_CAP}"
                 )
                 return usage
 
-            if usage["daily"] >= FREE_TIER_RPD:
-                msg = f"Daily free tier limit reached ({usage['daily']}/{FREE_TIER_RPD}). No more Gemini calls today."
+            if settings.GEMINI_DAILY_CAP_ENABLED and usage["daily"] >= settings.GEMINI_RPD_CAP:
+                msg = f"Daily quota limit reached ({usage['daily']}/{settings.GEMINI_RPD_CAP}). No more Gemini calls today."
                 logger.error(msg)
                 raise DailyQuotaExceededError(msg)
 
@@ -117,7 +115,7 @@ class QuotaManager:
             now = datetime.now(timezone.utc)
             wait_secs = 61 - now.second  # +1 for clock skew safety
             logger.warning(
-                f"RPM limit hit ({usage['minute']}/{FREE_TIER_RPM}). "
+                f"RPM limit hit ({usage['minute']}/{settings.GEMINI_RPM_CAP}). "
                 f"Waiting {wait_secs}s for next minute window..."
             )
             await asyncio.sleep(wait_secs)
@@ -142,21 +140,24 @@ class QuotaManager:
         daily = next((r.request_count for r in rows if r.window_type == "daily"), 0)
         minute = next((r.request_count for r in rows if r.window_type == "minute"), 0)
 
+        daily_cap = settings.GEMINI_RPD_CAP
+        rpm_cap = settings.GEMINI_RPM_CAP
+
         return {
             "model": model,
             "daily": {
                 "used": daily,
-                "limit": FREE_TIER_RPD,
-                "remaining": max(0, FREE_TIER_RPD - daily),
-                "percent_used": round(daily / FREE_TIER_RPD * 100, 1),
+                "limit": daily_cap if settings.GEMINI_DAILY_CAP_ENABLED else None,
+                "remaining": max(0, daily_cap - daily) if settings.GEMINI_DAILY_CAP_ENABLED else None,
+                "percent_used": round(daily / daily_cap * 100, 1) if settings.GEMINI_DAILY_CAP_ENABLED else 0.0,
             },
             "per_minute": {
                 "used": minute,
-                "limit": FREE_TIER_RPM,
-                "remaining": max(0, FREE_TIER_RPM - minute),
-                "percent_used": round(minute / FREE_TIER_RPM * 100, 1),
+                "limit": rpm_cap,
+                "remaining": max(0, rpm_cap - minute),
+                "percent_used": round(minute / rpm_cap * 100, 1),
             },
-            "within_free_tier": daily < FREE_TIER_RPD and minute < FREE_TIER_RPM,
+            "within_free_tier": (not settings.GEMINI_DAILY_CAP_ENABLED or daily < daily_cap) and minute < rpm_cap,
         }
 
     async def cleanup_old_windows(self):

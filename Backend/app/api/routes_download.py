@@ -77,7 +77,7 @@ async def download_excel_route(job_id: str, current_user: UserORM = Depends(get_
     if not job or job.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    if job.status != "done":
+    if job.status not in ("done", "completed_with_errors"):
         raise HTTPException(status_code=400, detail=f"Job is not complete yet. Status: {job.status}")
 
     if not job.excel_path:

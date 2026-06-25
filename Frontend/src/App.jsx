@@ -12,10 +12,17 @@ import Profile from './pages/Profile';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 
+const ACTIVE_JOB_KEY = 'billscan_active_job_id';
+
 export default function App() {
   const { user } = useAuth();
-  const [page, setPage] = useState('dashboard');
-  const [jobId, setJobId] = useState(null);
+  // Lazy init: restore the Processing page on a hard refresh if a job was
+  // still in flight when the user left. Processing.jsx clears this key once
+  // the job reaches a terminal state or the job is confirmed gone (404).
+  const [page, setPage] = useState(() =>
+    localStorage.getItem(ACTIVE_JOB_KEY) ? 'processing' : 'dashboard'
+  );
+  const [jobId, setJobId] = useState(() => localStorage.getItem(ACTIVE_JOB_KEY) || null);
   const [invoiceId, setInvoiceId] = useState(null);
   const [uploadedFiles, setUploadedFiles] = useState(null);
   const [toastMsg, setToastMsg] = useState(null);

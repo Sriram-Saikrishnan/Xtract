@@ -38,6 +38,7 @@ export default function Upload({ navigate, toast }) {
         throw new Error(err.detail || 'Upload failed');
       }
       const data = await res.json();
+      localStorage.setItem('billscan_active_job_id', data.job_id);
       toast('Upload started!');
       navigate('processing', {
         jobId: data.job_id,
