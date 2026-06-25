@@ -39,6 +39,7 @@ export default function Upload({ navigate, toast }) {
       }
       const data = await res.json();
       localStorage.setItem('billscan_active_job_id', data.job_id);
+      window.dispatchEvent(new Event('active-job-changed'));
       toast('Upload started!');
       navigate('processing', {
         jobId: data.job_id,

@@ -42,15 +42,17 @@ class PageResult:
     error: Optional[str]
 
 
-async def _flatten_to_page_tasks(file_list: List[tuple]) -> tuple[List[PageTask], int]:
+async def _flatten_to_page_tasks(file_list: List[tuple]) -> tuple[List[PageTask], List[tuple[str, str]]]:
     """
     Split every uploaded file into its page-level work units up front.
     Sequential and fast (CPU-bound PDF split, no Gemini calls) — a corrupt
     file only costs that one file, the rest of the batch still flattens.
-    Returns (page_tasks, file_level_error_count).
+    Returns (page_tasks, failed_files) — failed_files is (filename, error) pairs
+    for files that could not be read/split at all, so the caller can still give
+    each one a terminal job_pages row instead of dropping it silently.
     """
     page_tasks: List[PageTask] = []
-    file_errors = 0
+    failed_files: List[tuple[str, str]] = []
 
     for fp, fn in file_list:
         try:
@@ -68,13 +70,21 @@ async def _flatten_to_page_tasks(file_list: List[tuple]) -> tuple[List[PageTask]
 
         except Exception as e:
             logger.error(f"Error splitting {fn}: {e}")
-            file_errors += 1
+            failed_files.append((fn, str(e)))
 
-    return page_tasks, file_errors
+    return page_tasks, failed_files
 
 
-async def _init_job_pages(job_id: str, page_tasks: List[PageTask]) -> None:
-    """Insert one job_pages row per page (status=queued) and set jobs.total_pages."""
+async def _init_job_pages(
+    job_id: str, page_tasks: List[PageTask], failed_files: List[tuple[str, str]]
+) -> None:
+    """
+    Insert one job_pages row per page (status=queued), plus one row per file
+    that failed to read/split (status=failed) — every uploaded file lands in
+    exactly one row up front, so none can be silently dropped from the count.
+    Sets jobs.total_pages to the full page+failure count and pre-seeds
+    jobs.failed_pages so split failures are reflected immediately.
+    """
     async with AsyncSessionLocal() as session:
         for index, task in enumerate(page_tasks):
             session.add(JobPageORM(
@@ -84,10 +94,24 @@ async def _init_job_pages(job_id: str, page_tasks: List[PageTask]) -> None:
                 page_label=task.label,
                 status="queued",
             ))
+        offset = len(page_tasks)
+        for i, (filename, error) in enumerate(failed_files):
+            session.add(JobPageORM(
+                job_id=uuid.UUID(job_id),
+                page_index=offset + i,
+                filename=filename,
+                page_label=filename,
+                status="failed",
+                error_message=error,
+                updated_at=datetime.utcnow(),
+            ))
         await session.execute(
             update(JobORM)
             .where(JobORM.id == uuid.UUID(job_id))
-            .values(total_pages=len(page_tasks))
+            .values(
+                total_pages=len(page_tasks) + len(failed_files),
+                failed_pages=len(failed_files),
+            )
         )
         await session.commit()
 
@@ -236,13 +260,13 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
     # ── Stage 1: Extraction (flatten to pages, then bounded concurrent extraction) ─
     t0 = time.monotonic()
 
-    page_tasks, file_split_errors = await _flatten_to_page_tasks(file_list)
-    total_pages = len(page_tasks)
-    total_errors = file_split_errors
-    if file_split_errors:
-        job_store.increment(job_id, "error_count", by=file_split_errors)
+    page_tasks, failed_files = await _flatten_to_page_tasks(file_list)
+    total_pages = len(page_tasks) + len(failed_files)
+    total_errors = len(failed_files)
+    if failed_files:
+        job_store.increment(job_id, "error_count", by=len(failed_files))
 
-    await _init_job_pages(job_id, page_tasks)
+    await _init_job_pages(job_id, page_tasks, failed_files)
     await job_store.push_event(job_id, "stage_start", {"stage": "extraction", "total": total_pages})
 
     extraction_sem = asyncio.Semaphore(settings.MAX_CONCURRENT_EXTRACTIONS)
@@ -384,6 +408,8 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
             verified_count=total_verified,
             flagged_count=total_flagged,
             error_count=total_errors,
+            failed_pages=page_failures,
+            total_pages=total_pages,
         )
 
         await job_store.push_event(job_id, "stage_complete", {
@@ -394,6 +420,8 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
             "verified": total_verified,
             "flagged": total_flagged,
             "errors": total_errors,
+            "failed_pages": page_failures,
+            "total_pages": total_pages,
             "duration_ms": int((time.monotonic() - job_start) * 1000),
         })
         logger.info(f"Job {job_id}: completed. Excel at storage:{storage_path}")

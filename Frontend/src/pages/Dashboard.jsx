@@ -111,7 +111,7 @@ export default function Dashboard({ navigate, toast }) {
             ) : (
               <table className="tbl">
                 <thead>
-                  <tr><th>Job ID</th><th>Files</th><th>Status</th><th>Verified</th><th>Flagged</th><th>Date</th><th style={{ width: 44 }}></th></tr>
+                  <tr><th>Job ID</th><th>Files</th><th>Status</th><th>Verified</th><th>Flagged</th><th>Errors</th><th>Date</th><th style={{ width: 44 }}></th></tr>
                 </thead>
                 <tbody>
                   {recentJobs.map(j => (
@@ -121,6 +121,7 @@ export default function Dashboard({ navigate, toast }) {
                       <td><StatusBadge status={j.status} /></td>
                       <td className="text-mono" style={{ color: 'var(--green)', fontWeight: 700 }}>{j.verified_count}</td>
                       <td className="text-mono" style={{ color: 'var(--amber)' }}>{j.flagged_count}</td>
+                      <td className="text-mono" style={{ color: j.error_count > 0 ? 'var(--red)' : 'var(--text-3)' }}>{j.error_count || 0}</td>
                       <td className="muted" style={{ fontSize: 12.5 }}>{fmtDate(j.created_at)}</td>
                       <td style={{ padding: '0 10px' }}>
                         <button

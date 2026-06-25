@@ -27,7 +27,7 @@ async def test_init_job_pages_creates_one_row_per_page_with_queued_status(make_j
     job_id = str(await make_job())
     tasks = _tasks(4)
 
-    await _init_job_pages(job_id, tasks)
+    await _init_job_pages(job_id, tasks, [])
 
     async with patch_db() as session:
         result = await session.execute(
@@ -45,7 +45,7 @@ async def test_init_job_pages_creates_one_row_per_page_with_queued_status(make_j
 
 async def test_set_page_status_done_updates_status_and_updated_at(make_job, patch_db):
     job_id = str(await make_job())
-    await _init_job_pages(job_id, _tasks(1))
+    await _init_job_pages(job_id, _tasks(1), [])
 
     async with patch_db() as session:
         result = await session.execute(select(JobPageORM).where(JobPageORM.job_id == uuid.UUID(job_id)))
@@ -67,7 +67,7 @@ async def test_set_page_status_done_updates_status_and_updated_at(make_job, patc
 
 async def test_set_page_status_failed_stores_error_message(make_job, patch_db):
     job_id = str(await make_job())
-    await _init_job_pages(job_id, _tasks(1))
+    await _init_job_pages(job_id, _tasks(1), [])
 
     await _set_page_status(job_id, 0, "failed", error_message="Gemini timed out")
 
@@ -77,6 +77,34 @@ async def test_set_page_status_failed_stores_error_message(make_job, patch_db):
 
     assert page.status == "failed"
     assert page.error_message == "Gemini timed out"
+
+
+async def test_init_job_pages_includes_split_failures_so_no_page_is_silently_dropped(make_job, patch_db):
+    """
+    Regression: files that fail to read/split (e.g. a corrupt PDF) used to be
+    dropped before ever reaching job_pages — total_pages excluded them and the
+    terminal UI had no bucket to show them in. They must now get their own
+    failed row, and total_pages/failed_pages must account for them.
+    """
+    job_id = str(await make_job())
+    tasks = _tasks(2)
+    failed_files = [("corrupt.pdf", "could not split PDF")]
+
+    await _init_job_pages(job_id, tasks, failed_files)
+
+    async with patch_db() as session:
+        result = await session.execute(
+            select(JobPageORM).where(JobPageORM.job_id == uuid.UUID(job_id)).order_by(JobPageORM.page_index)
+        )
+        pages = result.scalars().all()
+        job = await session.get(JobORM, uuid.UUID(job_id))
+
+    assert len(pages) == 3
+    assert job.total_pages == 3
+    assert job.failed_pages == 1
+    failed_row = [p for p in pages if p.status == "failed"][0]
+    assert failed_row.filename == "corrupt.pdf"
+    assert failed_row.error_message == "could not split PDF"
 
 
 async def test_increment_job_counter_is_a_single_atomic_update_no_read_then_write(make_job, patch_db, monkeypatch):

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from './context/AuthContext';
 import Sidebar from './components/Sidebar';
 import Topbar from './components/Topbar';
@@ -13,6 +13,7 @@ import Login from './pages/Login';
 import Signup from './pages/Signup';
 
 const ACTIVE_JOB_KEY = 'billscan_active_job_id';
+const ACTIVE_JOB_EVENT = 'active-job-changed';
 
 export default function App() {
   const { user } = useAuth();
@@ -23,6 +24,17 @@ export default function App() {
     localStorage.getItem(ACTIVE_JOB_KEY) ? 'processing' : 'dashboard'
   );
   const [jobId, setJobId] = useState(() => localStorage.getItem(ACTIVE_JOB_KEY) || null);
+  // Tracks the in-flight job independently of `jobId` above, which gets
+  // overwritten whenever the user navigates to Extractions/Detail for a
+  // *different* job. Without this, leaving Processing for any other job's
+  // detail view left no way back to the active job short of a hard refresh.
+  const [activeJobId, setActiveJobId] = useState(() => localStorage.getItem(ACTIVE_JOB_KEY) || null);
+
+  useEffect(() => {
+    const sync = () => setActiveJobId(localStorage.getItem(ACTIVE_JOB_KEY) || null);
+    window.addEventListener(ACTIVE_JOB_EVENT, sync);
+    return () => window.removeEventListener(ACTIVE_JOB_EVENT, sync);
+  }, []);
   const [invoiceId, setInvoiceId] = useState(null);
   const [uploadedFiles, setUploadedFiles] = useState(null);
   const [toastMsg, setToastMsg] = useState(null);
@@ -61,7 +73,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <Sidebar page={page} navigate={navigate} />
+      <Sidebar page={page} navigate={navigate} activeJobId={activeJobId} />
       <div>
         <Topbar />
         {Content}

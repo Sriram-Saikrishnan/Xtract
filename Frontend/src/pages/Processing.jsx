@@ -3,6 +3,7 @@ import { Ic } from '../components/icons';
 import { API_BASE, apiFetch, downloadExcel } from '../utils/formatters';
 
 const ACTIVE_JOB_KEY = 'billscan_active_job_id';
+const ACTIVE_JOB_EVENT = 'active-job-changed';
 const TERMINAL_STATUSES = ['done', 'completed_with_errors', 'error'];
 const STATUS_POLL_MS = 3000;
 
@@ -61,6 +62,7 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
     setCompletionData(data);
     if (data?.duration_ms != null) setFinalDuration(data.duration_ms);
     localStorage.removeItem(ACTIVE_JOB_KEY);
+    window.dispatchEvent(new Event(ACTIVE_JOB_EVENT));
     clearInterval(timerRef.current);
     clearInterval(pollRef.current);
     if (esRef.current) esRef.current.close();
@@ -74,6 +76,7 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
     // navigation state but Upload.jsx's write hasn't happened (e.g. resumed
     // from an older tab) and the case where the user navigates away and back.
     localStorage.setItem(ACTIVE_JOB_KEY, jobId);
+    window.dispatchEvent(new Event(ACTIVE_JOB_EVENT));
 
     const token = localStorage.getItem('xtract_token');
     const es = new EventSource(`${API_BASE}/stream/${jobId}?token=${encodeURIComponent(token)}`);
@@ -107,10 +110,12 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
 
     es.addEventListener('processing_complete', (e) => {
       const data = JSON.parse(e.data);
-      // SSE has no notion of completed_with_errors — fall back to "errors > 0"
-      // as a best-effort guess; the DB poll below will correct this if it
-      // lands first or shortly after with the authoritative status string.
-      const status = data.error ? 'error' : (data.errors > 0 ? 'completed_with_errors' : 'done');
+      // SSE has no notion of completed_with_errors — fall back to "failed
+      // pages > 0" as a best-effort guess; the DB poll below will correct
+      // this if it lands first or shortly after with the authoritative
+      // status string. The backend now includes failed_pages/total_pages on
+      // this event too, so the summary card sums correctly either way.
+      const status = data.error ? 'error' : ((data.failed_pages || 0) > 0 ? 'completed_with_errors' : 'done');
       finish(status, data);
     });
 
@@ -133,6 +138,7 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
         const res = await apiFetch(`/status/${jobId}`);
         if (res.status === 404) {
           localStorage.removeItem(ACTIVE_JOB_KEY);
+          window.dispatchEvent(new Event(ACTIVE_JOB_EVENT));
           clearInterval(pollRef.current);
           toast('Previous job not found');
           navigate('dashboard');
@@ -167,8 +173,14 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
     ? fmtFinal(finalDuration)
     : null;
 
+  // Every page lands in exactly one terminal bucket — verified, flagged, or
+  // failed — and these three must sum to total_pages. "errors" alone used to
+  // be the only failure signal shown here, which hid pages that failed
+  // before ever producing a bill (e.g. unreadable files). Show failed_pages
+  // explicitly so the displayed counts are always reconcilable with total.
+  const failedCount = completionData?.failed_pages ?? completionData?.errors ?? 0;
   const summary = completionData
-    ? `${completionData.verified} verified · ${completionData.flagged} flagged · ${completionData.errors} errors`
+    ? `${completionData.verified} verified · ${completionData.flagged} flagged · ${failedCount} failed`
     : '';
 
   const progressPct = pageProgress.total > 0

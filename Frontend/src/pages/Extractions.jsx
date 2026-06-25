@@ -235,6 +235,7 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
                 <StatusBadge status={job.status} />
                 {job.verified_count > 0 && <span className="badge badge-green">{job.verified_count} verified</span>}
                 {job.flagged_count > 0 && <span className="badge badge-amber">{job.flagged_count} flagged</span>}
+                {job.error_count > 0 && <span className="badge badge-red">{job.error_count} error{job.error_count !== 1 ? 's' : ''}</span>}
               </div>
               <div className="row gap-2">
                 <span className="text-mono muted" style={{ fontSize: 12 }}>{job.id.slice(0, 8)}…</span>

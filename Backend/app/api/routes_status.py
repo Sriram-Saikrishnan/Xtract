@@ -93,6 +93,8 @@ async def stream_job(job_id: str, token: str = Query(...)):
                     "verified": job.verified_count or 0,
                     "flagged": job.flagged_count or 0,
                     "errors": job.error_count or 0,
+                    "failed_pages": job.failed_pages or 0,
+                    "total_pages": job.total_pages or 0,
                     "duration_ms": 0,
                 })
 
@@ -112,6 +114,8 @@ async def stream_job(job_id: str, token: str = Query(...)):
             "verified": live.get("verified_count", 0),
             "flagged": live.get("flagged_count", 0),
             "errors": live.get("error_count", 0),
+            "failed_pages": live.get("failed_pages", 0),
+            "total_pages": live.get("total_pages", 0),
             "duration_ms": 0,
         })
 

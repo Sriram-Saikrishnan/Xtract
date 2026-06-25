@@ -1,7 +1,7 @@
 import { Ic } from './icons';
 import { useAuth } from '../context/AuthContext';
 
-export default function Sidebar({ page, navigate }) {
+export default function Sidebar({ page, navigate, activeJobId }) {
   const { user, logout } = useAuth();
 
   const top = [
@@ -25,6 +25,16 @@ export default function Sidebar({ page, navigate }) {
       </div>
       <div className="nav-section-label">Workspace</div>
       <nav className="nav">
+        {activeJobId && (
+          <button
+            className={`nav-item ${page === 'processing' ? 'active' : ''}`}
+            onClick={() => navigate('processing', { jobId: activeJobId })}
+          >
+            <Ic.upload className="nav-icon" />
+            <span>Processing</span>
+            <span className="pulse-dot" style={{ marginLeft: 'auto', width: 6, height: 6 }}></span>
+          </button>
+        )}
         {top.map(it => {
           const I = it.icon;
           return (
