@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -608,13 +608,24 @@ async def run_retry_processor(
 
         terminal_status = "completed_with_errors" if remaining_count > 0 else "done"
 
+        # Atomically promote the job counters:
+        #   verified_count / flagged_count: add the newly extracted bills
+        #   error_count: subtract the pages that now succeeded (floor at 0)
+        succeeded_count = total_verified + total_flagged
         async with AsyncSessionLocal() as session:
-            job = await session.get(JobORM, uuid.UUID(job_id))
-            if job:
-                job.status = terminal_status
-                job.completed_at = datetime.utcnow()
-                job.excel_path = storage_path
-                await session.commit()
+            await session.execute(
+                update(JobORM)
+                .where(JobORM.id == uuid.UUID(job_id))
+                .values(
+                    status=terminal_status,
+                    completed_at=datetime.utcnow(),
+                    excel_path=storage_path,
+                    verified_count=JobORM.verified_count + total_verified,
+                    flagged_count=JobORM.flagged_count + total_flagged,
+                    error_count=func.greatest(0, JobORM.error_count - succeeded_count),
+                )
+            )
+            await session.commit()
 
         job_store.update(job_id, status=terminal_status, excel_ready=True, completed_at=datetime.utcnow())
 
