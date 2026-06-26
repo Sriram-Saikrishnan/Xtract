@@ -37,6 +37,8 @@ export default function App() {
   }, []);
   const [invoiceId, setInvoiceId] = useState(null);
   const [uploadedFiles, setUploadedFiles] = useState(null);
+  const [retryMode, setRetryMode] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
   const [toastMsg, setToastMsg] = useState(null);
   const [authPage, setAuthPage] = useState('login');
   const toast = msg => setToastMsg(msg);
@@ -45,6 +47,10 @@ export default function App() {
     if (opts.jobId !== undefined) setJobId(opts.jobId);
     if (opts.invoiceId !== undefined) setInvoiceId(opts.invoiceId);
     if (opts.uploadedFiles !== undefined) setUploadedFiles(opts.uploadedFiles);
+    if (opts.retryMode !== undefined) setRetryMode(opts.retryMode);
+    else if (newPage !== 'processing') setRetryMode(false);
+    if (opts.retryCount !== undefined) setRetryCount(opts.retryCount);
+    else if (newPage !== 'processing') setRetryCount(0);
     setPage(newPage);
   };
 
@@ -64,7 +70,7 @@ export default function App() {
   let Content;
   switch (page) {
     case 'upload':      Content = <Upload {...pageProps} />; break;
-    case 'processing':  Content = <Processing {...pageProps} jobId={jobId} uploadedFiles={uploadedFiles} />; break;
+    case 'processing':  Content = <Processing {...pageProps} jobId={jobId} uploadedFiles={uploadedFiles} retryMode={retryMode} retryCount={retryCount} />; break;
     case 'extractions': Content = <Extractions {...pageProps} highlightJobId={jobId} />; break;
     case 'detail':      Content = <Detail {...pageProps} invoiceId={invoiceId} jobId={jobId} />; break;
     case 'profile':     Content = <Profile {...pageProps} />; break;

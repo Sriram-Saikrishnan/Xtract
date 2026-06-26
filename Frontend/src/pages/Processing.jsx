@@ -33,7 +33,7 @@ function fmtFinal(ms) {
   return `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
-export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
+export default function Processing({ navigate, toast, jobId, uploadedFiles, retryMode = false, retryCount = 0 }) {
   const [stages, setStages] = useState({
     extraction: { ...INIT_STAGE },
     compliance: { ...INIT_STAGE },
@@ -44,14 +44,44 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
   const [finalDuration, setFinalDuration] = useState(null);
   const [pageProgress, setPageProgress] = useState({ completed: 0, total: 0 });
   const [now, setNow] = useState(Date.now());
+  const [localRetryMode, setLocalRetryMode] = useState(false);
+  const [localRetryCount, setLocalRetryCount] = useState(0);
+  const [sseRevision, setSseRevision] = useState(0);
+  const [retryLoading, setRetryLoading] = useState(false);
   const timerRef = useRef(null);
   const esRef = useRef(null);
   const pollRef = useRef(null);
   const finishedRef = useRef(false);
 
+  const inRetryMode = retryMode || localRetryMode;
+  const retryTotal = retryCount || localRetryCount;
+
   const isDone = jobStatus === 'done' || jobStatus === 'completed_with_errors';
   const isPartial = jobStatus === 'completed_with_errors';
   const isError = jobStatus === 'error';
+
+  const handleInlineRetry = async () => {
+    setRetryLoading(true);
+    try {
+      const res = await apiFetch(`/jobs/${jobId}/retry`, { method: 'POST' });
+      if (!res.ok) { toast('Retry failed'); return; }
+      const data = await res.json();
+      if (data.retrying === 0) { toast('No pages to retry'); return; }
+      setStages({ extraction: { ...INIT_STAGE }, compliance: { ...INIT_STAGE }, excel: { ...INIT_STAGE } });
+      setCompletionData(null);
+      setJobStatus('processing');
+      setFinalDuration(null);
+      setPageProgress({ completed: 0, total: data.retrying });
+      finishedRef.current = false;
+      setLocalRetryMode(true);
+      setLocalRetryCount(data.retrying);
+      setSseRevision(prev => prev + 1);
+    } catch {
+      toast('Retry failed');
+    } finally {
+      setRetryLoading(false);
+    }
+  };
 
   // Single entry point for reaching a terminal state, whichever source (SSE
   // or DB poll) detects it first. Guarded so it only runs once.
@@ -127,7 +157,7 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
       es.close();
       clearInterval(timerRef.current);
     };
-  }, [jobId]);
+  }, [jobId, sseRevision]);
 
   // ── DB-backed status poll: progress bar + authoritative terminal state ──
   useEffect(() => {
@@ -167,7 +197,7 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
     poll();
     pollRef.current = setInterval(poll, STATUS_POLL_MS);
     return () => clearInterval(pollRef.current);
-  }, [jobId]);
+  }, [jobId, sseRevision]);
 
   const globalElapsed = finalDuration != null
     ? fmtFinal(finalDuration)
@@ -183,9 +213,9 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
     ? `${completionData.verified} verified · ${completionData.flagged} flagged · ${failedCount} failed`
     : '';
 
-  const progressPct = pageProgress.total > 0
-    ? Math.round((pageProgress.completed / pageProgress.total) * 100)
-    : 0;
+  const progressCurrent = inRetryMode ? stages.extraction.current : pageProgress.completed;
+  const progressTotal = inRetryMode ? (retryTotal || stages.extraction.total || 0) : pageProgress.total;
+  const progressPct = progressTotal > 0 ? Math.round((progressCurrent / progressTotal) * 100) : 0;
 
   return (
     <div className="page">
@@ -200,7 +230,12 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
       <div className="page-header">
         <div>
           <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            {isPartial ? 'Extraction completed with errors' : isDone ? 'Extraction complete' : isError ? 'Extraction failed' : 'Extracting documents'}
+            {inRetryMode && !isDone && !isError
+              ? `Retrying ${retryTotal} failed page${retryTotal !== 1 ? 's' : ''}`
+              : isPartial ? 'Extraction completed with errors'
+              : isDone ? 'Extraction complete'
+              : isError ? 'Extraction failed'
+              : 'Extracting documents'}
             {!isDone && !isError && <span className="pulse-dot"></span>}
           </h1>
           <p className="page-sub">
@@ -212,6 +247,13 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
         </div>
         {isDone && (
           <div className="row gap-2">
+            {isPartial && (
+              <button className="btn btn-secondary" onClick={handleInlineRetry} disabled={retryLoading}>
+                {retryLoading
+                  ? <><span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }}></span> Retrying…</>
+                  : `Retry Failed Pages (${completionData?.failed_pages ?? 0})`}
+              </button>
+            )}
             <button className="btn btn-secondary" onClick={() => downloadExcel(jobId).catch(() => toast('Download failed'))}>
               <Ic.download style={{ width: 14, height: 14 }} /> Download Excel
             </button>
@@ -237,8 +279,8 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles }) {
         <div className="card mb-3">
           <div className="card-pad">
             <div className="row between" style={{ marginBottom: 6, fontSize: 12.5 }}>
-              <span className="muted">Overall progress</span>
-              <span className="muted">{pageProgress.completed} / {pageProgress.total || '…'} pages</span>
+              <span className="muted">{inRetryMode ? 'Retry progress' : 'Overall progress'}</span>
+              <span className="muted">{progressCurrent} / {progressTotal || '…'} pages</span>
             </div>
             <div style={{ height: 8, borderRadius: 4, background: 'var(--bg-2, #eee)', overflow: 'hidden' }}>
               <div style={{

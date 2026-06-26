@@ -200,6 +200,14 @@ def _is_rate_limit(err_str: str) -> bool:
     return "429" in err_str or "resource_exhausted" in err_str.lower() or "quota" in err_str.lower()
 
 
+def _is_service_unavailable(err_str: str) -> bool:
+    return "503" in err_str or "service_unavailable" in err_str.lower()
+
+
+_503_BACKOFFS = [5, 15, 30, 60]  # wait seconds before attempts 2, 3, 4, 5
+_MAX_503_ATTEMPTS = 5
+
+
 def _count_pdf_pages(file_bytes: bytes) -> int:
     import fitz  # pymupdf
     with fitz.open(stream=file_bytes, filetype="pdf") as doc:
@@ -290,11 +298,15 @@ async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "imag
         logger.error(f"Skipping {filename}: {e}")
         return None
 
-    for attempt in range(settings.MAX_RETRIES):
+    attempt = 0
+    consecutive_503 = 0
+
+    while True:
         uploaded_file = None
+        total_attempt = attempt + consecutive_503
         try:
             prompt_text = f"Filename (context only, do not use to guess fields): {filename}\n\n"
-            prompt_text += EXTRACTION_PROMPT if attempt == 0 else STRICT_PROMPT
+            prompt_text += EXTRACTION_PROMPT if total_attempt == 0 else STRICT_PROMPT
 
             if is_pdf:
                 try:
@@ -362,17 +374,39 @@ async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "imag
                 f"({len(raw_text)} chars, finish_reason={finish_reason}). "
                 f"Head: {raw_text[:120]!r} ... Tail: {raw_text[-120:]!r}"
             )
+            attempt += 1
+            if attempt >= settings.MAX_RETRIES:
+                break
 
         except Exception as e:
             err_str = str(e)
             logger.error(f"[{filename}] Attempt {attempt + 1} error: {err_str}")
 
-            if _is_rate_limit(err_str):
+            if _is_service_unavailable(err_str):
+                consecutive_503 += 1
+                if consecutive_503 >= _MAX_503_ATTEMPTS:
+                    logger.error(
+                        f"[{filename}] Failed after {_MAX_503_ATTEMPTS} attempts — "
+                        f"Gemini demand spike, mark for retry"
+                    )
+                    break
+                wait = _503_BACKOFFS[consecutive_503 - 1]
+                logger.warning(
+                    f"[{filename}] 503 received, retrying in {wait}s "
+                    f"(attempt {consecutive_503 + 1}/{_MAX_503_ATTEMPTS})"
+                )
+                await asyncio.sleep(wait)
+            elif _is_rate_limit(err_str):
+                attempt += 1
+                if attempt >= settings.MAX_RETRIES:
+                    break
                 logger.warning(f"Rate limit — waiting {settings.RETRY_WAIT_SECONDS}s before retry...")
                 await asyncio.sleep(settings.RETRY_WAIT_SECONDS)
             else:
-                if attempt < settings.MAX_RETRIES - 1:
-                    await asyncio.sleep(5)
+                attempt += 1
+                if attempt >= settings.MAX_RETRIES:
+                    break
+                await asyncio.sleep(5)
 
         finally:
             if uploaded_file is not None:

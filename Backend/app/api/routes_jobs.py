@@ -1,11 +1,13 @@
 import uuid
 import logging
+from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy import select
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
+from sqlalchemy import select, update
 
-from app.database import AsyncSessionLocal, JobORM, InvoiceORM, LineItemORM, UserORM, db_retry
+from app.database import AsyncSessionLocal, JobORM, JobPageORM, InvoiceORM, LineItemORM, UserORM, db_retry
 from app.core.auth import get_current_user
+from app.core.batch_processor import run_retry_processor
 from app.core.job_store import job_store
 from app.core.storage import delete_excel, is_storage_key
 
@@ -158,6 +160,75 @@ async def get_invoice(invoice_id: str, current_user: UserORM = Depends(get_curre
                 for item in items
             ],
         }
+
+
+@router.post("/jobs/{job_id}/retry")
+async def retry_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: UserORM = Depends(get_current_user),
+):
+    """
+    Re-extract only the failed pages for a job. Pages with status=done are
+    never touched. Idempotent: calling twice only retries whatever is still failed.
+    Returns 409 if the job is already processing.
+    """
+    async with AsyncSessionLocal() as session:
+        job = await session.get(JobORM, uuid.UUID(job_id))
+        if not job or job.user_id != current_user.id:
+            raise HTTPException(404, "Job not found")
+
+        if job.status == "processing":
+            raise HTTPException(409, "Job is already processing")
+
+        result = await session.execute(
+            select(JobPageORM).where(
+                JobPageORM.job_id == uuid.UUID(job_id),
+                JobPageORM.status == "failed",
+            )
+        )
+        failed_pages = result.scalars().all()
+
+        if not failed_pages:
+            return {"job_id": job_id, "retrying": 0, "status": job.status}
+
+        retry_count = len(failed_pages)
+        failed_page_data = [
+            {"page_index": p.page_index, "filename": p.filename, "page_label": p.page_label}
+            for p in failed_pages
+        ]
+
+        # Reset target pages to queued
+        await session.execute(
+            update(JobPageORM)
+            .where(
+                JobPageORM.job_id == uuid.UUID(job_id),
+                JobPageORM.status == "failed",
+            )
+            .values(status="queued", error_message=None, updated_at=datetime.utcnow())
+        )
+
+        # Atomic decrement of failed_pages; set job back to processing
+        await session.execute(
+            update(JobORM)
+            .where(JobORM.id == uuid.UUID(job_id))
+            .values(
+                failed_pages=JobORM.failed_pages - retry_count,
+                status="processing",
+                completed_at=None,
+            )
+        )
+        await session.commit()
+
+    # Reset job_store for SSE before the background task starts (avoids
+    # a race where the client hits /stream before the task calls job_store.update)
+    job_store.delete(job_id)
+    job_store.create(job_id, total_files=retry_count)
+    job_store.update(job_id, status="processing")
+
+    background_tasks.add_task(run_retry_processor, job_id, failed_page_data, str(current_user.id))
+
+    return {"job_id": job_id, "retrying": retry_count, "status": "processing"}
 
 
 @router.delete("/job/{job_id}")

@@ -133,6 +133,8 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
   const [deleteModal, setDeleteModal] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [masterModal, setMasterModal] = useState(false);
+  const [retryModal, setRetryModal] = useState(null);
+  const [retrying, setRetrying] = useState({});
 
   useEffect(() => {
     apiFetch('/jobs')
@@ -163,6 +165,26 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
     const isOpen = expanded[jid];
     setExpanded(prev => ({ ...prev, [jid]: !isOpen }));
     if (!isOpen) fetchInvoices(jid);
+  };
+
+  const handleRetry = async (job) => {
+    setRetryModal(null);
+    setRetrying(prev => ({ ...prev, [job.id]: true }));
+    try {
+      const res = await apiFetch(`/jobs/${job.id}/retry`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast(err.detail || 'Retry failed');
+        return;
+      }
+      const data = await res.json();
+      if (data.retrying === 0) { toast('No failed pages found'); return; }
+      navigate('processing', { jobId: job.id, retryMode: true, retryCount: data.retrying });
+    } catch {
+      toast('Retry failed');
+    } finally {
+      setRetrying(prev => ({ ...prev, [job.id]: false }));
+    }
   };
 
   const handleDelete = async () => {
@@ -244,6 +266,17 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
                     <Ic.download style={{ width: 13, height: 13 }} /> Excel
                   </button>
                 )}
+                {job.status === 'completed_with_errors' && (
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={e => { e.stopPropagation(); setRetryModal(job); }}
+                    disabled={!!retrying[job.id]}
+                  >
+                    {retrying[job.id]
+                      ? <span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} />
+                      : 'Retry Failed'}
+                  </button>
+                )}
                 <button
                   className="btn btn-ghost btn-sm"
                   style={{ color: 'var(--text-3)', padding: '5px 8px', borderRadius: 8 }}
@@ -297,6 +330,29 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
           </div>
         );
       })}
+
+      {retryModal && (
+        <div className="modal-overlay" onClick={() => setRetryModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="row between" style={{ marginBottom: 16 }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 16, letterSpacing: '-0.02em', marginBottom: 2 }}>Re-extract failed pages?</div>
+                <div style={{ color: 'var(--text-3)', fontSize: 12.5 }}>{retryModal.failed_pages} page{retryModal.failed_pages !== 1 ? 's' : ''} failed</div>
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setRetryModal(null)} style={{ padding: '4px 8px', fontSize: 16 }}>✕</button>
+            </div>
+            <div style={{ fontSize: 13.5, color: 'var(--text-2)', marginBottom: 24 }}>
+              Only failed pages will be re-extracted. Pages that already succeeded are not affected.
+            </div>
+            <div className="row gap-2" style={{ justifyContent: 'flex-end' }}>
+              <button className="btn btn-ghost" onClick={() => setRetryModal(null)}>Cancel</button>
+              <button className="btn btn-primary" onClick={() => handleRetry(retryModal)}>
+                Re-extract {retryModal.failed_pages} failed page{retryModal.failed_pages !== 1 ? 's' : ''}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ConfirmDeleteModal
         job={deleteModal}
