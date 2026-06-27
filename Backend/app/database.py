@@ -132,7 +132,7 @@ class InvoiceORM(Base):
     __tablename__ = "invoices"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id"), nullable=False)
+    job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id"), nullable=False, index=True)
     source_filename = Column(String(512))
     category = Column(String(100))
     invoice_number = Column(String(200))
@@ -183,7 +183,7 @@ class LineItemORM(Base):
     __tablename__ = "line_items"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    invoice_id = Column(UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False)
+    invoice_id = Column(UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False, index=True)
     sr_no = Column(Integer)
     die_number = Column(String(100))
     po_number = Column(String(100))
@@ -191,6 +191,8 @@ class LineItemORM(Base):
     hsn_sac_code = Column(String(50))
     grade = Column(String(100))
     quantity = Column(Float, default=0.0)
+    quantity_unit = Column(String(50), nullable=True)
+    weight_kg = Column(Float, default=0.0)
     rate = Column(Float, default=0.0)
     amount = Column(Float, default=0.0)
 
@@ -251,6 +253,12 @@ async def init_db(retries: int = 5, backoff: float = 2.0):
                 ))
                 await conn.execute(text(
                     "ALTER TABLE users ADD COLUMN IF NOT EXISTS company_phone VARCHAR(50)"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE line_items ADD COLUMN IF NOT EXISTS quantity_unit VARCHAR(50)"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE line_items ADD COLUMN IF NOT EXISTS weight_kg FLOAT DEFAULT 0.0"
                 ))
             return
         except Exception as exc:

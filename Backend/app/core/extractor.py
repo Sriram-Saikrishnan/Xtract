@@ -71,6 +71,18 @@ def _scan_for_gstin(raw: GeminiExtractionResult, exclude: Optional[str]) -> Opti
     return None
 
 
+def _sanity_check(bill: ExtractedBill) -> ExtractedBill:
+    flags = list(bill.flags)
+    item_total = sum(item.amount for item in bill.line_items)
+    if item_total > 0 and bill.assessable_value == 0.0:
+        flags.append("ZERO_ASSESSABLE_WITH_ITEMS")
+    if item_total > 0 and bill.grand_total == 0.0:
+        flags.append("ZERO_GRAND_TOTAL")
+    if flags == list(bill.flags):
+        return bill
+    return bill.model_copy(update={"flags": flags})
+
+
 def normalize(raw: GeminiExtractionResult, filename: str) -> ExtractedBill:
     line_items = []
     for idx, item in enumerate(raw.line_items or []):
@@ -82,6 +94,8 @@ def normalize(raw: GeminiExtractionResult, filename: str) -> ExtractedBill:
             hsn_sac_code=_clean_str(item.hsn_sac_code),
             grade=_clean_str(item.grade),
             quantity=_safe_float(item.quantity),
+            quantity_unit=_clean_str(item.quantity_unit),
+            weight_kg=_safe_float(item.weight_kg),
             rate=_safe_float(item.rate),
             amount=_safe_float(item.amount),
         ))
@@ -90,7 +104,7 @@ def normalize(raw: GeminiExtractionResult, filename: str) -> ExtractedBill:
     if total_qty == 0 and line_items:
         total_qty = int(sum(li.quantity for li in line_items))
 
-    return ExtractedBill(
+    bill = ExtractedBill(
         source_filename=filename,
         category=_clean_str(raw.category) or "Other",
         invoice_number=_clean_str(raw.invoice_number),
@@ -148,4 +162,4 @@ def normalize(raw: GeminiExtractionResult, filename: str) -> ExtractedBill:
                 "flags": ["GSTIN_AUTO_EXTRACTED"],
             })
 
-    return bill
+    return _sanity_check(bill)

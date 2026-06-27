@@ -41,6 +41,7 @@ class PageResult:
     task: PageTask
     bill: Optional[ExtractedBill]
     error: Optional[str]
+    page_row_index: int = 0
 
 
 async def _flatten_to_page_tasks(file_list: List[tuple]) -> tuple[List[PageTask], List[tuple[str, str]]]:
@@ -165,17 +166,17 @@ async def _extract_one_page(
                 logger.warning(f"{task.label}: extraction returned None")
                 await _set_page_status(job_id, page_row_index, "failed", error_message="extraction returned None")
                 await _increment_job_counter(job_id, "failed_pages")
-                return PageResult(task, bill=None, error="extraction returned None")
+                return PageResult(task, bill=None, error="extraction returned None", page_row_index=page_row_index)
             bill = normalize(raw, task.filename)
             logger.info(f"{task.label}: {len(bill.line_items)} item(s) extracted")
             await _set_page_status(job_id, page_row_index, "done")
             await _increment_job_counter(job_id, "completed_pages")
-            return PageResult(task, bill=bill, error=None)
+            return PageResult(task, bill=bill, error=None, page_row_index=page_row_index)
         except Exception as e:
             logger.error(f"{task.label}: extraction failed — {e}")
             await _set_page_status(job_id, page_row_index, "failed", error_message=str(e))
             await _increment_job_counter(job_id, "failed_pages")
-            return PageResult(task, bill=None, error=str(e))
+            return PageResult(task, bill=None, error=str(e), page_row_index=page_row_index)
         finally:
             job_store.increment(job_id, "processed_files")
             await job_store.push_event(job_id, "stage_progress", {
@@ -248,6 +249,8 @@ async def _save_bill(session: AsyncSession, job_id: str, bill: ExtractedBill):
             hsn_sac_code=item.hsn_sac_code,
             grade=item.grade,
             quantity=item.quantity,
+            quantity_unit=item.quantity_unit,
+            weight_kg=item.weight_kg,
             rate=item.rate,
             amount=item.amount,
         )
@@ -283,7 +286,7 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
         return_exceptions=True,  # defensive: _extract_one_page already catches internally
     )
 
-    all_bills: List[ExtractedBill] = []
+    all_bills: List[tuple[ExtractedBill, int]] = []  # (bill, page_row_index)
     for page_index, result in enumerate(extraction_results):
         if isinstance(result, BaseException):
             # Should never happen — _extract_one_page catches everything itself.
@@ -296,7 +299,7 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
             await _increment_job_counter(job_id, "failed_pages")
             continue
         if result.bill is not None:
-            all_bills.append(result.bill)
+            all_bills.append((result.bill, result.page_row_index))
         else:
             total_errors += 1
             job_store.increment(job_id, "error_count")
@@ -319,7 +322,7 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
     total_verified = 0
     total_flagged = 0
 
-    async def _save_one(bill_to_save: ExtractedBill) -> None:
+    async def _save_one(bill_to_save: ExtractedBill, page_row_idx: int) -> None:
         async with db_sem:
             try:
                 async with AsyncSessionLocal() as session:
@@ -327,8 +330,9 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
             except Exception as e:
                 logger.error(f"Save failed for {bill_to_save.source_filename}: {e}")
                 job_store.increment(job_id, "error_count")
+                await _set_page_status(job_id, page_row_idx, "failed", error_message=f"DB save error: {e}")
 
-    for i, bill in enumerate(all_bills):
+    for i, (bill, page_row_idx) in enumerate(all_bills):
         label = bill.invoice_number or bill.source_filename
         await job_store.push_event(job_id, "stage_progress", {
             "stage": "compliance",
@@ -355,7 +359,7 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
 
         # Only the DB write is dispatched concurrently (bounded by db_sem) —
         # compliance logic above stays fully sequential.
-        save_tasks.append(asyncio.create_task(_save_one(bill)))
+        save_tasks.append(asyncio.create_task(_save_one(bill, page_row_idx)))
 
     # Explicit ordering guard: all saves MUST complete before Excel generation
     # below reads invoices/line_items back out of the DB.

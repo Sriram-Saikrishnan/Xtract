@@ -341,7 +341,7 @@ async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "imag
                 model=settings.GEMINI_MODEL,
                 contents=contents,
                 config=types.GenerateContentConfig(
-                    max_output_tokens=8192,
+                    max_output_tokens=16384,
                     temperature=0.1,
                 ),
             )
@@ -357,7 +357,7 @@ async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "imag
             if str(finish_reason) not in ("FinishReason.STOP", "STOP", "1"):
                 logger.warning(
                     f"[{filename}] finish_reason={finish_reason} — response may be truncated; "
-                    f"consider raising max_output_tokens beyond 8192"
+                    f"consider raising max_output_tokens beyond 16384"
                 )
 
             parsed = _parse_json(raw_text)

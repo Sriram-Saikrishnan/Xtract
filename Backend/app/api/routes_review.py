@@ -1,6 +1,6 @@
 import uuid
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
@@ -28,9 +28,26 @@ class FlaggedInvoice(BaseModel):
     category: Optional[str]
 
 
+class InvoiceCorrectionFields(BaseModel):
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[str] = None
+    supplier_name: Optional[str] = None
+    supplier_gstin: Optional[str] = None
+    supplier_state: Optional[str] = None
+    buyer_name: Optional[str] = None
+    buyer_gstin: Optional[str] = None
+    grand_total: Optional[float] = None
+    assessable_value: Optional[float] = None
+    igst_amount: Optional[float] = None
+    cgst_amount: Optional[float] = None
+    sgst_amount: Optional[float] = None
+    category: Optional[str] = None
+    document_type: Optional[str] = None
+
+
 class CorrectionRequest(BaseModel):
     invoice_id: str
-    corrected_fields: Dict[str, Any]
+    corrected_fields: InvoiceCorrectionFields
 
 
 @router.get("/review/{job_id}", response_model=List[FlaggedInvoice])
@@ -73,17 +90,6 @@ async def get_flagged_bills(job_id: str, current_user: UserORM = Depends(get_cur
 
 @router.post("/review/{job_id}/correct")
 async def correct_invoice(job_id: str, correction: CorrectionRequest, current_user: UserORM = Depends(get_current_user)):
-    ALLOWED_FIELDS = {
-        "invoice_number", "invoice_date", "supplier_name", "supplier_gstin",
-        "supplier_state", "buyer_name", "buyer_gstin", "grand_total",
-        "assessable_value", "igst_amount", "cgst_amount", "sgst_amount",
-        "category", "document_type",
-    }
-
-    invalid = set(correction.corrected_fields.keys()) - ALLOWED_FIELDS
-    if invalid:
-        raise HTTPException(status_code=400, detail=f"Cannot update fields: {invalid}")
-
     try:
         async with AsyncSessionLocal() as session:
             job = await session.get(JobORM, uuid.UUID(job_id))
@@ -94,7 +100,7 @@ async def correct_invoice(job_id: str, correction: CorrectionRequest, current_us
             if not invoice or str(invoice.job_id) != job_id:
                 raise HTTPException(status_code=404, detail="Invoice not found")
 
-            for field, value in correction.corrected_fields.items():
+            for field, value in correction.corrected_fields.model_dump(exclude_none=True).items():
                 setattr(invoice, field, value)
 
             invoice.status = "VERIFIED"

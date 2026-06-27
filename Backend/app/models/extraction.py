@@ -10,6 +10,8 @@ class GeminiLineItem(BaseModel):
     hsn_sac_code: Optional[str] = None
     grade: Optional[str] = None
     quantity: Optional[float] = 0.0
+    quantity_unit: Optional[str] = None
+    weight_kg: Optional[float] = 0.0
     rate: Optional[float] = 0.0
     amount: Optional[float] = 0.0
 

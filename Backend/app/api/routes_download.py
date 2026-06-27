@@ -1,15 +1,14 @@
 import uuid
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Depends, Query
-from fastapi.responses import Response
+from fastapi.responses import Response, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.core.auth import get_current_user
-from app.core.storage import download_excel, is_storage_key
+from app.core.storage import create_signed_url, is_storage_key
 from app.database import AsyncSessionLocal, JobORM, InvoiceORM, UserORM
 from app.excel.excel_builder import build_workbook, workbook_to_bytes
 
@@ -87,13 +86,9 @@ async def download_excel_route(job_id: str, current_user: UserORM = Depends(get_
         raise HTTPException(status_code=404, detail="Excel file is no longer available. Please re-run the extraction.")
 
     try:
-        file_bytes = await download_excel(job.excel_path)
+        signed_url = await create_signed_url(job.excel_path, expires_in=300)
     except Exception as e:
-        logger.error(f"Storage download failed for job {job_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve Excel file from storage")
+        logger.error(f"Signed URL creation failed for job {job_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate download link")
 
-    return Response(
-        content=file_bytes,
-        media_type=EXCEL_MIME,
-        headers={"Content-Disposition": f'attachment; filename="Xtract_{job_id[:8]}.xlsx"'},
-    )
+    return RedirectResponse(url=signed_url, status_code=302)

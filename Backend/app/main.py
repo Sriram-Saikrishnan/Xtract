@@ -2,13 +2,17 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from sqlalchemy import text
 
 from app.config import settings
 from app.core.file_cleaner import start_scheduler, stop_scheduler
-from app.database import init_db
+from app.core.rate_limiter import limiter
+from app.database import init_db, AsyncSessionLocal
 from app.api import routes_upload, routes_status, routes_download, routes_review, routes_quota, routes_jobs, routes_auth
 
 logging.basicConfig(
@@ -35,6 +39,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,4 +70,11 @@ async def serve_frontend():
 
 @app.get("/health", tags=["Health"])
 async def health():
-    return {"ok": True, "version": "1.0.0"}
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception:
+        db_ok = False
+    status_code = 200 if db_ok else 503
+    return JSONResponse(status_code=status_code, content={"ok": db_ok, "version": "1.0.0"})

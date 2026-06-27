@@ -1,10 +1,12 @@
 import uuid
 import logging
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from sqlalchemy import select, update
 
+from app.config import settings
 from app.database import AsyncSessionLocal, JobORM, JobPageORM, InvoiceORM, LineItemORM, UserORM, db_retry
 from app.core.auth import get_current_user
 from app.core.batch_processor import run_retry_processor
@@ -191,6 +193,22 @@ async def retry_job(
 
         if not failed_pages:
             return {"job_id": job_id, "retrying": 0, "status": job.status}
+
+        # Pre-check: all source files must exist on disk before we start
+        upload_dir = Path(settings.UPLOAD_DIR)
+        missing = [
+            p.filename for p in failed_pages
+            if not (upload_dir / f"{job_id}_{p.filename}").exists()
+        ]
+        if missing:
+            unique_missing = list(dict.fromkeys(missing))
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Source files for {len(unique_missing)} file(s) have expired and are no longer on disk. "
+                    f"Please re-upload to retry. Missing: {unique_missing[:5]}"
+                ),
+            )
 
         retry_count = len(failed_pages)
         failed_page_data = [

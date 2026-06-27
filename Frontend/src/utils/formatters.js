@@ -1,4 +1,4 @@
-export const API_BASE = 'https://xtract-nftf.onrender.com';
+export const API_BASE = import.meta.env.VITE_API_URL || 'https://xtract-nftf.onrender.com';
 
 const TOKEN_KEY = 'xtract_token';
 

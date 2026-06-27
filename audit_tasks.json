@@ -1,0 +1,337 @@
+{
+  "tasks": [
+    {
+      "id": "T01",
+      "priority": "P1",
+      "section": "1.3",
+      "title": "Stream file uploads to disk instead of reading into memory",
+      "description": "routes_upload.py reads entire file content into memory before size validation. Use aiofiles chunked writes and reject mid-stream when threshold crossed.",
+      "files": ["Backend/app/api/routes_upload.py"],
+      "status": "done"
+    },
+    {
+      "id": "T02",
+      "priority": "P1",
+      "section": "1.4",
+      "title": "Update job_pages status to failed when _save_one throws",
+      "description": "_save_one in batch_processor.py increments error_count but leaves the job_pages row as 'done'. Pass page_index into save failure path and call _set_page_status(..., 'failed').",
+      "files": ["Backend/app/core/batch_processor.py"],
+      "status": "done"
+    },
+    {
+      "id": "T03",
+      "priority": "P1",
+      "section": "1.2",
+      "title": "Add Alembic and remove migration-on-boot",
+      "description": "init_db() runs raw ALTER TABLE at every startup, causing race conditions on multi-instance deploy. Add Alembic, move migrations to deploy pipeline step before app start.",
+      "files": ["Backend/app/database.py", "Backend/app/main.py"],
+      "status": "not_started"
+    },
+    {
+      "id": "T04",
+      "priority": "P1",
+      "section": "2.1",
+      "title": "Raise max_output_tokens from 8192 to 16384",
+      "description": "Invoices with many line items can exceed 8192 output tokens, producing malformed JSON that fails all retries. Gemini 1.5 Flash supports 16384.",
+      "files": ["Backend/app/core/gemini_client.py"],
+      "status": "done"
+    },
+    {
+      "id": "T05",
+      "priority": "P1",
+      "section": "2.2",
+      "title": "Propagate quantity_unit and weight_kg through extraction pipeline",
+      "description": "Prompt asks Gemini for quantity_unit and weight_kg per line item but GeminiLineItem and LineItem models don't have these fields. Add fields to models, ORM, and extractor.normalize.",
+      "files": [
+        "Backend/app/models/extraction.py",
+        "Backend/app/models/bill.py",
+        "Backend/app/database.py",
+        "Backend/app/core/extractor.py"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "T06",
+      "priority": "P1",
+      "section": "2.3",
+      "title": "Add post-extraction sanity check for hallucinated zeros",
+      "description": "Add _sanity_check step after normalize: flag ZERO_ASSESSABLE_WITH_ITEMS when line items are non-zero but assessable_value is 0, and ZERO_GRAND_TOTAL when grand_total is 0 but items exist.",
+      "files": ["Backend/app/core/extractor.py"],
+      "status": "done"
+    },
+    {
+      "id": "T07",
+      "priority": "P1",
+      "section": "3.1",
+      "title": "Add indexes on invoices.job_id and line_items.invoice_id",
+      "description": "Both FK columns lack index=True. Full table scans on every Excel build and Extractions page load. Add index=True to InvoiceORM.job_id and LineItemORM.invoice_id.",
+      "files": ["Backend/app/database.py"],
+      "status": "done"
+    },
+    {
+      "id": "T08",
+      "priority": "P1",
+      "section": "3.2",
+      "title": "Migrate invoice_date from String(20) to Date column",
+      "description": "invoice_date stored as DD/MM/YYYY string prevents SQL date range queries. Change to Column(Date, nullable=True), update extractor.normalize to emit Python date, update excel_builder formatting.",
+      "files": [
+        "Backend/app/database.py",
+        "Backend/app/core/extractor.py",
+        "Backend/app/excel/excel_builder.py"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T09",
+      "priority": "P1",
+      "section": "3.4",
+      "title": "Wire gemini_quota cleanup into file_cleaner scheduler",
+      "description": "quota_manager.cleanup_old_windows exists but is never called. Add it to file_cleaner.py's APScheduler to run hourly alongside existing file deletion job.",
+      "files": [
+        "Backend/app/core/quota_manager.py",
+        "Backend/app/core/file_cleaner.py"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "T10",
+      "priority": "P1",
+      "section": "4.1",
+      "title": "Replace hardcoded API_BASE with VITE_API_URL env var",
+      "description": "API_BASE is hardcoded to production URL in utils/formatters.js. Use import.meta.env.VITE_API_URL with fallback. Add .env.local for dev and Vercel env var for production.",
+      "files": ["Frontend/src/utils/formatters.js"],
+      "status": "done"
+    },
+    {
+      "id": "T11",
+      "priority": "P1",
+      "section": "4.2",
+      "title": "Replace JWT in SSE URL query param with short-lived stream token",
+      "description": "JWT passed as ?token= appears in server logs and browser history. Add POST /stream-token endpoint returning a 60s single-use ticket; SSE connects with ticket token instead of full JWT.",
+      "files": [
+        "Backend/app/api/routes_status.py",
+        "Frontend/src/pages/Processing.jsx"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T12",
+      "priority": "P1",
+      "section": "4.3",
+      "title": "Add SSE reconnection logic on error",
+      "description": "es.onerror does nothing. On SSE disconnect close EventSource, wait 2-5s, and reconnect. Backend stream endpoint already handles reconnects to completed jobs gracefully.",
+      "files": ["Frontend/src/pages/Processing.jsx"],
+      "status": "done"
+    },
+    {
+      "id": "T13",
+      "priority": "P1",
+      "section": "4.6",
+      "title": "Wire invoice correction edit UI in Detail page",
+      "description": "PATCH /review/correct endpoint exists but Detail.jsx has no edit toggle or form. Add edit mode that converts fields to inputs and calls the correction endpoint on save.",
+      "files": ["Frontend/src/pages/Detail.jsx"],
+      "status": "not_started"
+    },
+    {
+      "id": "T14",
+      "priority": "P1",
+      "section": "5.2",
+      "title": "Return signed URL for Excel download instead of proxying file",
+      "description": "routes_download.py fetches Excel from Supabase into backend memory then streams to client. Generate a Supabase signed URL (300s) and return 302 RedirectResponse instead.",
+      "files": ["Backend/app/api/routes_download.py"],
+      "status": "done"
+    },
+    {
+      "id": "T15",
+      "priority": "P1",
+      "section": "5.3",
+      "title": "Restrict /review/correct to explicit allowed fields only",
+      "description": "corrected_fields: Dict[str, Any] allows overwriting any ORM column. Define InvoiceCorrectionFields model with only user-editable fields and apply only those to the ORM object.",
+      "files": ["Backend/app/api/routes_review.py"],
+      "status": "done"
+    },
+    {
+      "id": "T16",
+      "priority": "P1",
+      "section": "6.1",
+      "title": "Handle expired source files in retry endpoint",
+      "description": "Files are deleted after 2 hours but retry button stays active. Either extend TTL to 24h or pre-check that all failed pages have source files before starting retry and return a clear error.",
+      "files": [
+        "Backend/app/core/file_cleaner.py",
+        "Backend/app/api/routes_jobs.py"
+      ],
+      "status": "done"
+    },
+    {
+      "id": "T17",
+      "priority": "P1",
+      "section": "6.2",
+      "title": "Add database probe to health check endpoint",
+      "description": "GET /health returns 200 unconditionally even when DB is down. Execute SELECT 1 in the health handler and return HTTP 503 if it fails so Render marks the instance unhealthy.",
+      "files": ["Backend/app/main.py"],
+      "status": "done"
+    },
+    {
+      "id": "T18",
+      "priority": "P1",
+      "section": "7.1",
+      "title": "Add magic byte validation to file upload",
+      "description": "Upload validation checks extension only. After reading first bytes, verify magic bytes match declared extension (%PDF, JPEG, PNG). Reject mismatches before writing to disk.",
+      "files": ["Backend/app/api/routes_upload.py"],
+      "status": "done"
+    },
+    {
+      "id": "T19",
+      "priority": "P1",
+      "section": "7.2",
+      "title": "Add rate limiting to auth endpoints",
+      "description": "No rate limiting on /auth/login or /auth/signup enables brute-force and email enumeration. Add slowapi with 10/minute on login and 5/minute on signup.",
+      "files": ["Backend/app/api/routes_auth.py", "Backend/app/main.py"],
+      "status": "done"
+    },
+    {
+      "id": "T20",
+      "priority": "P2",
+      "section": "1.1",
+      "title": "Split database.py into engine, models, and migrations modules",
+      "description": "database.py has 267 lines mixing engine setup, ORM models, init_db, and db_retry. Split into db/engine.py, db/models.py, db/migrations.py with no behavior change.",
+      "files": ["Backend/app/database.py"],
+      "status": "not_started"
+    },
+    {
+      "id": "T21",
+      "priority": "P2",
+      "section": "1.5",
+      "title": "Remove dead BATCH_SIZE and BATCH_DELAY_SECONDS config",
+      "description": "config.py defines BATCH_SIZE=10 and BATCH_DELAY_SECONDS=65 but neither is referenced anywhere. Remove or wire them up to avoid false confidence in batching behavior.",
+      "files": ["Backend/app/config.py"],
+      "status": "not_started"
+    },
+    {
+      "id": "T22",
+      "priority": "P2",
+      "section": "1.6",
+      "title": "Replace threading.Lock with asyncio.Lock in job_store",
+      "description": "job_store.py uses threading.Lock around async data structures. All callers are async. Replace with asyncio.Lock to match the event loop model.",
+      "files": ["Backend/app/core/job_store.py"],
+      "status": "not_started"
+    },
+    {
+      "id": "T23",
+      "priority": "P2",
+      "section": "2.4",
+      "title": "Increase Files API polling interval from 2s to 5s",
+      "description": "gemini_client._upload_file polls ACTIVE state with time.sleep(2) every 2s in thread pool. Change to time.sleep(5) and max_wait_sec=120 to reduce thread churn by 60%.",
+      "files": ["Backend/app/core/gemini_client.py"],
+      "status": "not_started"
+    },
+    {
+      "id": "T24",
+      "priority": "P2",
+      "section": "2.5",
+      "title": "Update default Gemini model to gemini-2.0-flash",
+      "description": "config.py defaults GEMINI_MODEL to gemini-1.5-flash. Update default to gemini-2.0-flash (or 2.5-flash) for better structured extraction accuracy.",
+      "files": ["Backend/app/config.py"],
+      "status": "not_started"
+    },
+    {
+      "id": "T25",
+      "priority": "P2",
+      "section": "3.3",
+      "title": "Change flags column from semicolon string to PostgreSQL ARRAY",
+      "description": "flags stored as semicolon-delimited text prevents indexed filtering. Change to ARRAY(Text) type to enable clean flag-based queries.",
+      "files": ["Backend/app/database.py"],
+      "status": "not_started"
+    },
+    {
+      "id": "T26",
+      "priority": "P2",
+      "section": "3.5",
+      "title": "Make JobORM.user_id non-nullable",
+      "description": "user_id is nullable=True in database.py. After backfilling or removing orphaned rows, add NOT NULL constraint via Alembic migration.",
+      "files": ["Backend/app/database.py"],
+      "status": "not_started"
+    },
+    {
+      "id": "T27",
+      "priority": "P2",
+      "section": "4.4",
+      "title": "Refresh user object from /auth/me on AuthContext mount",
+      "description": "User object read from localStorage is never refreshed. Add /auth/me fetch in AuthContext useEffect on mount (guarded by token presence) to replace stale cached object.",
+      "files": ["Frontend/src/context/AuthContext.jsx"],
+      "status": "not_started"
+    },
+    {
+      "id": "T28",
+      "priority": "P2",
+      "section": "4.5",
+      "title": "Add per-file upload progress using XMLHttpRequest",
+      "description": "Upload.jsx uses fetch with no progress events, leaving users with no feedback during long uploads. Replace with XHR and wire xhr.upload.onprogress to bytes-transferred state.",
+      "files": ["Frontend/src/pages/Upload.jsx"],
+      "status": "not_started"
+    },
+    {
+      "id": "T29",
+      "priority": "P2",
+      "section": "5.1",
+      "title": "Consolidate all job-scoped endpoints under /jobs/{job_id}",
+      "description": "URL structure is inconsistent: /status, /stream, /download, /review are top-level while /jobs/{id}/invoices is nested. Move all job-scoped routes under /jobs/{job_id}/.",
+      "files": [
+        "Backend/app/api/routes_status.py",
+        "Backend/app/api/routes_download.py",
+        "Backend/app/api/routes_review.py",
+        "Backend/app/api/routes_upload.py"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T30",
+      "priority": "P2",
+      "section": "5.4",
+      "title": "Add pagination to /jobs and invoice listing endpoints",
+      "description": "list_jobs has hardcoded .limit(50) and list_job_invoices has no limit. Add ?page and ?per_page query params to both endpoints.",
+      "files": ["Backend/app/api/routes_jobs.py"],
+      "status": "not_started"
+    },
+    {
+      "id": "T31",
+      "priority": "P2",
+      "section": "6.3",
+      "title": "Add POST /jobs/{job_id}/rebuild-excel endpoint",
+      "description": "Excel build failure leaves job in error state with invoice data intact but unreachable. Add rebuild-excel endpoint that reruns only the Excel build and Storage upload step.",
+      "files": [
+        "Backend/app/api/routes_jobs.py",
+        "Backend/app/core/batch_processor.py"
+      ],
+      "status": "not_started"
+    },
+    {
+      "id": "T32",
+      "priority": "P2",
+      "section": "6.4",
+      "title": "Switch to structured JSON logging with job_id context",
+      "description": "Logs are unstructured text making per-job filtering impossible. Switch to python-json-logger and use LoggerAdapter in batch_processor to inject job_id into every log line.",
+      "files": ["Backend/app/main.py", "Backend/app/core/batch_processor.py"],
+      "status": "not_started"
+    },
+    {
+      "id": "T33",
+      "priority": "P2",
+      "section": "7.3",
+      "title": "Use EmailStr for email validation in signup",
+      "description": "Naive '@' and '.' check accepts invalid addresses. Use Pydantic's EmailStr field type on SignupRequest.email for proper validation and normalization.",
+      "files": ["Backend/app/api/routes_auth.py"],
+      "status": "not_started"
+    },
+    {
+      "id": "T34",
+      "priority": "P2",
+      "section": "7.4",
+      "title": "Default ALLOWED_ORIGINS to empty list and fail fast in production",
+      "description": "ALLOWED_ORIGINS defaults to localhost values if unset in production env. Default to [] and add startup check that fails if ALLOWED_ORIGINS is empty when ENV != 'development'.",
+      "files": ["Backend/app/config.py"]
+      ,
+      "status": "not_started"
+    }
+  ]
+}

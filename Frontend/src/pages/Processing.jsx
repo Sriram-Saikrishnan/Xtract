@@ -150,7 +150,11 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles, retr
     });
 
     es.onerror = () => {
-      // SSE connection lost — the status poll below keeps the UI moving.
+      if (finishedRef.current) return;
+      es.close();
+      setTimeout(() => {
+        if (!finishedRef.current) setSseRevision(prev => prev + 1);
+      }, 3000);
     };
 
     return () => {

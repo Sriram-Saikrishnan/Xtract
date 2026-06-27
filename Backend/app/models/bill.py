@@ -18,6 +18,8 @@ class LineItem(BaseModel):
     hsn_sac_code: Optional[str] = None
     grade: Optional[str] = None
     quantity: float = 0.0
+    quantity_unit: Optional[str] = None
+    weight_kg: float = 0.0
     rate: float = 0.0
     amount: float = 0.0
 

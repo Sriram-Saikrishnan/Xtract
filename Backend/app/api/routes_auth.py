@@ -1,12 +1,13 @@
 import re
 import uuid
 import logging
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 
 from app.database import AsyncSessionLocal, UserORM, db_retry
 from app.core.auth import hash_password, verify_password, create_access_token, get_current_user
+from app.core.rate_limiter import limiter
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -52,8 +53,9 @@ def _user_dict(user: UserORM) -> dict:
 
 
 @router.post("/signup")
+@limiter.limit("5/minute")
 @db_retry()
-async def signup(body: SignupRequest):
+async def signup(request: Request, body: SignupRequest):
     if "@" not in body.email or "." not in body.email.split("@")[-1]:
         raise HTTPException(400, "Invalid email address")
     if len(body.password) < 8:
@@ -81,8 +83,9 @@ async def signup(body: SignupRequest):
 
 
 @router.post("/login")
+@limiter.limit("10/minute")
 @db_retry()
-async def login(body: LoginRequest):
+async def login(request: Request, body: LoginRequest):
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(UserORM).where(UserORM.email == body.email.lower().strip())

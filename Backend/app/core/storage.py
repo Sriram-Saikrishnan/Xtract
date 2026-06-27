@@ -72,6 +72,25 @@ async def download_excel(key: str) -> bytes:
     return res.content
 
 
+async def create_signed_url(key: str, expires_in: int = 300) -> str:
+    """Return a short-lived signed URL for direct client download from Supabase Storage."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        res = await client.post(
+            f"{settings.SUPABASE_URL}/storage/v1/object/sign/{BUCKET}/{key}",
+            json={"expiresIn": expires_in},
+            headers=_headers(),
+        )
+    if res.status_code != 200:
+        raise RuntimeError(f"Signed URL creation failed [{res.status_code}]: {res.text}")
+    data = res.json()
+    signed_path = data.get("signedURL") or data.get("signedUrl") or ""
+    if not signed_path:
+        raise RuntimeError(f"No signedURL in response: {data}")
+    if signed_path.startswith("http"):
+        return signed_path
+    return f"{settings.SUPABASE_URL}{signed_path}"
+
+
 async def delete_excel(key: str) -> None:
     """Remove an Excel file from Supabase Storage (best-effort, errors are logged not raised)."""
     try:
