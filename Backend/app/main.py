@@ -12,6 +12,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.core.file_cleaner import start_scheduler, stop_scheduler
 from app.core.rate_limiter import limiter
+from app.core.startup_recovery import recover_interrupted_jobs
 from app.database import init_db, AsyncSessionLocal
 from app.api import routes_upload, routes_status, routes_download, routes_review, routes_quota, routes_jobs, routes_auth
 
@@ -28,6 +29,7 @@ async def lifespan(app: FastAPI):
     Path(settings.OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
     await init_db()
     logger.info("Database tables verified/created")
+    await recover_interrupted_jobs()
     start_scheduler()
     yield
     stop_scheduler()

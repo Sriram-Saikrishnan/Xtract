@@ -56,9 +56,10 @@ async def patch_db(test_session_factory, monkeypatch):
     import app.api.routes_jobs as routes_jobs
     import app.api.routes_status as routes_status
     import app.core.batch_processor as batch_processor
+    import app.core.startup_recovery as startup_recovery
     import app.database as database
 
-    for mod in (database, batch_processor, routes_status, routes_jobs, routes_download):
+    for mod in (database, batch_processor, routes_status, routes_jobs, routes_download, startup_recovery):
         monkeypatch.setattr(mod, "AsyncSessionLocal", test_session_factory)
 
     return test_session_factory
@@ -75,7 +76,7 @@ async def make_job(patch_db):
                 user_id=user_id,
                 status=status,
                 total_files=fields.pop("total_files", 1),
-                created_at=datetime.utcnow(),
+                created_at=fields.pop("created_at", datetime.utcnow()),
                 **fields,
             )
             session.add(job)
