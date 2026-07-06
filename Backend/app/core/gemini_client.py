@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 
 import httpx
+import pydantic
 from google import genai
 from google.genai import types
 
@@ -17,6 +18,32 @@ from app.core.quota_manager import quota_manager, DailyQuotaExceededError
 logger = logging.getLogger(__name__)
 
 client = genai.Client(api_key=settings.GEMINI_API_KEY)
+
+
+def _strip_schema_keys(node):
+    """Recursively drop 'default' and 'title' keys from a JSON Schema tree.
+
+    The Gemini Developer API's response_json_schema rejects any node carrying
+    a non-null 'default' (see google-genai _transformers.py process_schema) —
+    pydantic's model_json_schema() emits one for every field with a default
+    value. 'title' is stripped too since it's redundant noise the SDK's own
+    response_schema path also strips automatically.
+    """
+    if isinstance(node, dict):
+        return {
+            key: _strip_schema_keys(value)
+            for key, value in node.items()
+            if key not in ("default", "title")
+        }
+    if isinstance(node, list):
+        return [_strip_schema_keys(item) for item in node]
+    return node
+
+
+# Derived once at import time — GeminiExtractionResult's own defaults (0.0,
+# 0.8, [] etc.) stay untouched on the model; only the schema sent to Gemini
+# has them stripped.
+_RESPONSE_JSON_SCHEMA = _strip_schema_keys(GeminiExtractionResult.model_json_schema())
 
 CATEGORY_PROMPT = """
 Categories — pick the ONE most accurate for this document:
@@ -109,63 +136,6 @@ The document image may be rotated (90°, 180°, 270°) or slightly skewed.
 8. `rate` is the per-unit price (per Nos or per Kg, as printed). Capture the unit context in `quantity_unit`.
 9. Do not produce false positives: if a field is unclear or ambiguous, return null rather than a guess.
 
-=== OUTPUT FORMAT ===
-Return ONLY a valid JSON object. No markdown, no explanation, no code fences.
-
-{{
-  "category": "string",
-  "invoice_number": "string or null",
-  "invoice_date": "DD/MM/YYYY or null",
-  "challan_number": "string or null",
-  "document_type": "TAX INVOICE / DELIVERY CHALLAN / PROFORMA / RECEIPT or null",
-  "supplier_name": "string or null",
-  "supplier_gstin": "string or null",
-  "supplier_state": "string or null",
-  "supplier_address": "string or null",
-  "supplier_email": "string or null",
-  "supplier_phone": "string or null",
-  "supplier_bank": "string or null",
-  "supplier_account_number": "string or null",
-  "supplier_ifsc": "string or null",
-  "buyer_name": "string or null",
-  "buyer_gstin": "string or null",
-  "place_of_supply": "string or null",
-  "destination": "string or null",
-  "transport_name": "string or null",
-  "lr_number": "string or null",
-  "vehicle_number": "string or null",
-  "eway_bill_number": "string or null",
-  "irn_number": "string or null",
-  "assessable_value": 0.0,
-  "tax_type": "IGST or CGST+SGST or null",
-  "igst_percent": 0.0,
-  "igst_amount": 0.0,
-  "cgst_percent": 0.0,
-  "cgst_amount": 0.0,
-  "sgst_percent": 0.0,
-  "sgst_amount": 0.0,
-  "pf_charges": 0.0,
-  "round_off": 0.0,
-  "grand_total": 0.0,
-  "total_weight_kg": 0.0,
-  "total_qty": 0,
-  "confidence_score": 0.8,
-  "line_items": [
-    {{
-      "sr_no": 1,
-      "die_number": "string or null",
-      "po_number": "string or null",
-      "description": "string or null",
-      "hsn_sac_code": "string or null",
-      "grade": "string or null",
-      "quantity": 0.0,
-      "quantity_unit": "string or null",
-      "weight_kg": 0.0,
-      "rate": 0.0,
-      "amount": 0.0
-    }}
-  ]
-}}
 """
 
 STRICT_PROMPT = EXTRACTION_PROMPT + "\nIMPORTANT: Return ONLY the raw JSON object. No markdown. No ```json. No explanation."
@@ -370,6 +340,8 @@ async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "imag
                 config=types.GenerateContentConfig(
                     max_output_tokens=16384,
                     temperature=0.1,
+                    response_mime_type="application/json",
+                    response_json_schema=_RESPONSE_JSON_SCHEMA,
                     http_options=types.HttpOptions(timeout=_http_timeout_ms()),
                 ),
             )
@@ -388,11 +360,27 @@ async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "imag
                     f"consider raising max_output_tokens beyond 16384"
                 )
 
+            if isinstance(response.parsed, dict):
+                try:
+                    result = GeminiExtractionResult(**response.parsed)
+                    logger.info(
+                        f"[{filename}] Extraction OK (structured) — {len(result.line_items)} line item(s), "
+                        f"confidence={result.confidence_score}"
+                    )
+                    return result
+                except pydantic.ValidationError as ve:
+                    logger.warning(
+                        f"[{filename}] structured parse produced a schema mismatch ({ve}); "
+                        f"fell back to text parse"
+                    )
+            else:
+                logger.warning(f"[{filename}] structured parse missed, fell back to text parse")
+
             parsed = _parse_json(raw_text)
             if parsed is not None:
                 result = GeminiExtractionResult(**parsed)
                 logger.info(
-                    f"[{filename}] Extraction OK — {len(result.line_items)} line item(s), "
+                    f"[{filename}] Extraction OK (fallback) — {len(result.line_items)} line item(s), "
                     f"confidence={result.confidence_score}"
                 )
                 return result

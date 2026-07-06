@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 
 
@@ -21,7 +21,10 @@ class GeminiExtractionResult(BaseModel):
     invoice_number: Optional[str] = None
     invoice_date: Optional[str] = None
     challan_number: Optional[str] = None
-    document_type: Optional[str] = None
+    document_type: Optional[str] = Field(
+        default=None,
+        description="One of: TAX INVOICE, DELIVERY CHALLAN, PROFORMA, RECEIPT — or null if none apply.",
+    )
     supplier_name: Optional[str] = None
     supplier_gstin: Optional[str] = None
     supplier_state: Optional[str] = None
@@ -41,7 +44,10 @@ class GeminiExtractionResult(BaseModel):
     eway_bill_number: Optional[str] = None
     irn_number: Optional[str] = None
     assessable_value: Optional[float] = 0.0
-    tax_type: Optional[str] = None
+    tax_type: Optional[str] = Field(
+        default=None,
+        description='Exactly "IGST" or "CGST+SGST" (no space around +) — or null if undetermined.',
+    )
     igst_percent: Optional[float] = 0.0
     igst_amount: Optional[float] = 0.0
     cgst_percent: Optional[float] = 0.0

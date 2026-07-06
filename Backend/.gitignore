@@ -7,3 +7,4 @@ venv/
 .venv/
 /tmp/
 *.xlsx
+tests/sample_bills/
