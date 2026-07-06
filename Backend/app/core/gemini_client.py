@@ -6,6 +6,7 @@ import logging
 import tempfile
 from pathlib import Path
 
+import httpx
 from google import genai
 from google.genai import types
 
@@ -218,6 +219,11 @@ _503_BACKOFFS = [5, 15, 30, 60]  # wait seconds before attempts 2, 3, 4, 5
 _MAX_503_ATTEMPTS = 5
 
 
+def _http_timeout_ms() -> int:
+    # google-genai's HttpOptions.timeout is in MILLISECONDS; our setting is in seconds.
+    return settings.GEMINI_TIMEOUT_SECONDS * 1000
+
+
 def _count_pdf_pages(file_bytes: bytes) -> int:
     import fitz  # pymupdf
     with fitz.open(stream=file_bytes, filetype="pdf") as doc:
@@ -260,7 +266,11 @@ def _upload_file(file_bytes: bytes, filename: str, mime_type: str):
     try:
         uploaded = client.files.upload(
             file=tmp_path,
-            config=types.UploadFileConfig(mime_type=mime_type, display_name=filename)
+            config=types.UploadFileConfig(
+                mime_type=mime_type,
+                display_name=filename,
+                http_options=types.HttpOptions(timeout=_http_timeout_ms()),
+            ),
         )
         # Poll until ACTIVE — Google processes all PDF pages asynchronously after upload.
         # Using the file before it's ACTIVE causes the model to see only partially-processed
@@ -270,7 +280,10 @@ def _upload_file(file_bytes: bytes, filename: str, mime_type: str):
         while getattr(uploaded.state, "name", "ACTIVE") == "PROCESSING" and elapsed < max_wait_sec:
             time.sleep(2)
             elapsed += 2
-            uploaded = client.files.get(name=uploaded.name)
+            uploaded = client.files.get(
+                name=uploaded.name,
+                config=types.GetFileConfig(http_options=types.HttpOptions(timeout=_http_timeout_ms())),
+            )
             logger.debug(f"[{filename}] Files API state: {uploaded.state.name} ({elapsed}s waited)")
 
         state = getattr(uploaded.state, "name", "UNKNOWN")
@@ -353,6 +366,7 @@ async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "imag
                 config=types.GenerateContentConfig(
                     max_output_tokens=16384,
                     temperature=0.1,
+                    http_options=types.HttpOptions(timeout=_http_timeout_ms()),
                 ),
             )
 
@@ -398,6 +412,19 @@ async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "imag
                 raise RuntimeError(
                     f"Model unavailable: {settings.GEMINI_MODEL} — check GEMINI_MODEL env var"
                 ) from e
+
+            if isinstance(e, httpx.TimeoutException):
+                # Retryable against MAX_RETRIES, like the generic-exception path below —
+                # deliberately NOT counted against consecutive_503 or the rate-limit path.
+                attempt += 1
+                logger.warning(
+                    f"[{filename}] Request timed out after {settings.GEMINI_TIMEOUT_SECONDS}s "
+                    f"(attempt {attempt}/{settings.MAX_RETRIES})"
+                )
+                if attempt >= settings.MAX_RETRIES:
+                    break
+                await asyncio.sleep(5)
+                continue
 
             logger.error(f"[{filename}] Attempt {attempt + 1} error: {err_str}")
 

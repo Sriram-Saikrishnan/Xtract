@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     MAX_RETRIES: int = 3
     RETRY_WAIT_SECONDS: int = 90
     CONFIDENCE_THRESHOLD: float = 0.75
+    GEMINI_TIMEOUT_SECONDS: int = 120
 
     # Gemini quota (Tier 1 billing: 4000 RPM, unlimited RPD — 90% safety buffer applied)
     GEMINI_RPM_CAP: int = 3600
