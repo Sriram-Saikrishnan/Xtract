@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 
 from app.config import settings
 from app.database import AsyncSessionLocal, JobORM, JobPageORM, InvoiceORM, LineItemORM, UserORM, db_retry
@@ -46,6 +46,29 @@ async def list_jobs(current_user: UserORM = Depends(get_current_user)):
             }
             for j in jobs
         ]
+
+
+@router.get("/stats")
+@db_retry()
+async def get_user_stats(current_user: UserORM = Depends(get_current_user)):
+    async with AsyncSessionLocal() as session:
+        row = await session.execute(
+            select(
+                func.count(JobORM.id).label("total_jobs"),
+                func.coalesce(func.sum(JobORM.total_files), 0).label("total_files"),
+                func.coalesce(func.sum(JobORM.verified_count), 0).label("total_verified"),
+                func.coalesce(func.sum(JobORM.flagged_count), 0).label("total_flagged"),
+                func.coalesce(func.sum(JobORM.error_count), 0).label("total_errors"),
+            ).where(JobORM.user_id == current_user.id)
+        )
+        r = row.one()
+        return {
+            "total_jobs": r.total_jobs,
+            "total_files": r.total_files,
+            "total_verified": r.total_verified,
+            "total_flagged": r.total_flagged,
+            "total_errors": r.total_errors,
+        }
 
 
 @router.get("/jobs/{job_id}/invoices")
@@ -265,6 +288,7 @@ async def delete_job(job_id: str, current_user: UserORM = Depends(get_current_us
         raise
     except Exception as e:
         logger.error(f"Delete job {job_id} DB error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete job")
 
     job_store.delete(job_id)
 

@@ -204,6 +204,16 @@ def _is_service_unavailable(err_str: str) -> bool:
     return "503" in err_str or "service_unavailable" in err_str.lower()
 
 
+def _is_model_not_found(err_str: str) -> bool:
+    err_lower = err_str.lower()
+    return (
+        "404" in err_str
+        or "not found" in err_lower
+        or "not_found" in err_lower
+        or "is not supported" in err_lower
+    )
+
+
 _503_BACKOFFS = [5, 15, 30, 60]  # wait seconds before attempts 2, 3, 4, 5
 _MAX_503_ATTEMPTS = 5
 
@@ -380,6 +390,15 @@ async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "imag
 
         except Exception as e:
             err_str = str(e)
+
+            if _is_model_not_found(err_str):
+                # Permanent config error — every page in this job will fail identically.
+                # Logged at WARNING here (per-page); the caller logs one ERROR per job.
+                logger.warning(f"[{filename}] Model not found ({settings.GEMINI_MODEL}): {err_str}")
+                raise RuntimeError(
+                    f"Model unavailable: {settings.GEMINI_MODEL} — check GEMINI_MODEL env var"
+                ) from e
+
             logger.error(f"[{filename}] Attempt {attempt + 1} error: {err_str}")
 
             if _is_service_unavailable(err_str):

@@ -8,14 +8,17 @@ import { apiFetch, fmtDate } from '../utils/formatters';
 
 export default function Dashboard({ navigate, toast }) {
   const [jobs, setJobs] = useState([]);
+  const [stats, setStats] = useState({ total_jobs: 0, total_files: 0, total_verified: 0, total_flagged: 0, total_errors: 0 });
   const [loading, setLoading] = useState(true);
   const [deleteModal, setDeleteModal] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
-    apiFetch('/jobs')
-      .then(r => r.json())
-      .then(d => { setJobs(d); setLoading(false); })
+    Promise.all([
+      apiFetch('/jobs').then(r => r.json()),
+      apiFetch('/stats').then(r => r.json()),
+    ])
+      .then(([jobsData, statsData]) => { setJobs(jobsData); setStats(statsData); setLoading(false); })
       .catch(() => setLoading(false));
   }, []);
 
@@ -26,6 +29,14 @@ export default function Dashboard({ navigate, toast }) {
       const res = await apiFetch(`/job/${deleteModal.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Delete failed');
       setJobs(prev => prev.filter(j => j.id !== deleteModal.id));
+      setStats(prev => ({
+        ...prev,
+        total_jobs: prev.total_jobs - 1,
+        total_files: prev.total_files - (deleteModal.total_files || 0),
+        total_verified: prev.total_verified - (deleteModal.verified_count || 0),
+        total_flagged: prev.total_flagged - (deleteModal.flagged_count || 0),
+        total_errors: prev.total_errors - (deleteModal.error_count || 0),
+      }));
       setDeleteModal(null);
       toast('Job deleted');
     } catch (e) {
@@ -35,10 +46,10 @@ export default function Dashboard({ navigate, toast }) {
     }
   };
 
-  const totalFiles = jobs.reduce((s, j) => s + (j.total_files || 0), 0);
-  const totalOk    = jobs.reduce((s, j) => s + (j.verified_count || 0), 0);
-  const totalFlag  = jobs.reduce((s, j) => s + (j.flagged_count || 0), 0);
-  const totalErr   = jobs.reduce((s, j) => s + (j.error_count || 0), 0);
+  const totalFiles = stats.total_files;
+  const totalOk    = stats.total_verified;
+  const totalFlag  = stats.total_flagged;
+  const totalErr   = stats.total_errors;
   const recentJobs = jobs.slice(0, 8);
   const sparkData  = jobs.slice(0, 13).reverse().map(j => j.total_files || 0);
   const sparkOk    = jobs.slice(0, 13).reverse().map(j => j.verified_count || 0);
@@ -60,7 +71,7 @@ export default function Dashboard({ navigate, toast }) {
           <div className="stat-label"><Ic.doc style={{ width: 14, height: 14 }} />Total Files Uploaded</div>
           <div className="stat-value">{totalFiles.toLocaleString()}</div>
           <div className="stat-foot">
-            <span className="trend trend-up">{jobs.length} jobs</span>
+            <span className="trend trend-up">{stats.total_jobs} jobs</span>
             <Sparkline data={sparkData.length ? sparkData : [0]} />
           </div>
         </div>

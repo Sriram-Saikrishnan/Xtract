@@ -25,6 +25,12 @@ from app.models.bill import BillStatus, ExtractedBill
 
 logger = logging.getLogger(__name__)
 
+_MODEL_NOT_FOUND_PREFIX = "Model unavailable:"
+# Job IDs for which the model-not-found ERROR has already been logged once —
+# every subsequent page in the same job hits the same permanent config error,
+# so this dedupes the log line without needing to thread job_id into extract_bill.
+_model_not_found_logged_jobs: set[str] = set()
+
 
 @dataclass
 class PageTask:
@@ -173,10 +179,16 @@ async def _extract_one_page(
             await _increment_job_counter(job_id, "completed_pages")
             return PageResult(task, bill=bill, error=None, page_row_index=page_row_index)
         except Exception as e:
-            logger.error(f"{task.label}: extraction failed — {e}")
-            await _set_page_status(job_id, page_row_index, "failed", error_message=str(e))
+            err_str = str(e)
+            if err_str.startswith(_MODEL_NOT_FOUND_PREFIX):
+                if job_id not in _model_not_found_logged_jobs:
+                    _model_not_found_logged_jobs.add(job_id)
+                    logger.error(f"Job {job_id}: {err_str}")
+            else:
+                logger.error(f"{task.label}: extraction failed — {e}")
+            await _set_page_status(job_id, page_row_index, "failed", error_message=err_str)
             await _increment_job_counter(job_id, "failed_pages")
-            return PageResult(task, bill=None, error=str(e), page_row_index=page_row_index)
+            return PageResult(task, bill=None, error=err_str, page_row_index=page_row_index)
         finally:
             job_store.increment(job_id, "processed_files")
             await job_store.push_event(job_id, "stage_progress", {
@@ -185,6 +197,10 @@ async def _extract_one_page(
                 "current": index + 1,
                 "total": total_pages,
             })
+
+
+def _trunc(value: Optional[str], limit: int) -> Optional[str]:
+    return value[:limit] if value and len(value) > limit else value
 
 
 async def _save_bill(session: AsyncSession, job_id: str, bill: ExtractedBill):
@@ -197,20 +213,20 @@ async def _save_bill(session: AsyncSession, job_id: str, bill: ExtractedBill):
         source_filename=bill.source_filename,
         category=bill.category,
         invoice_number=bill.invoice_number,
-        invoice_date=bill.invoice_date,
+        invoice_date=_trunc(bill.invoice_date, 20),
         challan_number=bill.challan_number,
         document_type=bill.document_type,
         supplier_name=bill.supplier_name,
-        supplier_gstin=bill.supplier_gstin,
+        supplier_gstin=_trunc(bill.supplier_gstin, 20),
         supplier_state=bill.supplier_state,
         supplier_address=bill.supplier_address,
         supplier_email=bill.supplier_email,
         supplier_phone=bill.supplier_phone,
         supplier_bank=bill.supplier_bank,
         supplier_account_number=bill.supplier_account_number,
-        supplier_ifsc=bill.supplier_ifsc,
+        supplier_ifsc=_trunc(bill.supplier_ifsc, 20),
         buyer_name=bill.buyer_name,
-        buyer_gstin=bill.buyer_gstin,
+        buyer_gstin=_trunc(bill.buyer_gstin, 20),
         place_of_supply=bill.place_of_supply,
         destination=bill.destination,
         transport_name=bill.transport_name,
@@ -219,7 +235,7 @@ async def _save_bill(session: AsyncSession, job_id: str, bill: ExtractedBill):
         eway_bill_number=bill.eway_bill_number,
         irn_number=bill.irn_number,
         assessable_value=bill.assessable_value,
-        tax_type=bill.tax_type,
+        tax_type=_trunc(bill.tax_type, 20),
         igst_percent=bill.igst_percent,
         igst_amount=bill.igst_amount,
         cgst_percent=bill.cgst_percent,
@@ -322,7 +338,7 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
     total_verified = 0
     total_flagged = 0
 
-    async def _save_one(bill_to_save: ExtractedBill, page_row_idx: int) -> None:
+    async def _save_one(bill_to_save: ExtractedBill, page_row_idx: int, is_verified: bool) -> None:
         async with db_sem:
             try:
                 async with AsyncSessionLocal() as session:
@@ -330,6 +346,13 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
             except Exception as e:
                 logger.error(f"Save failed for {bill_to_save.source_filename}: {e}")
                 job_store.increment(job_id, "error_count")
+                counter = "verified_count" if is_verified else "flagged_count"
+                job_store.increment(job_id, counter, by=-1)
+                nonlocal total_verified, total_flagged
+                if is_verified:
+                    total_verified -= 1
+                else:
+                    total_flagged -= 1
                 await _set_page_status(job_id, page_row_idx, "failed", error_message=f"DB save error: {e}")
 
     for i, (bill, page_row_idx) in enumerate(all_bills):
@@ -350,7 +373,8 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
         bill = check_duplicate(bill, processed_bills)
         processed_bills.append(bill)
 
-        if bill.status == BillStatus.VERIFIED:
+        is_verified = bill.status == BillStatus.VERIFIED
+        if is_verified:
             total_verified += 1
             job_store.increment(job_id, "verified_count")
         else:
@@ -359,7 +383,7 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
 
         # Only the DB write is dispatched concurrently (bounded by db_sem) —
         # compliance logic above stays fully sequential.
-        save_tasks.append(asyncio.create_task(_save_one(bill, page_row_idx)))
+        save_tasks.append(asyncio.create_task(_save_one(bill, page_row_idx, is_verified)))
 
     # Explicit ordering guard: all saves MUST complete before Excel generation
     # below reads invoices/line_items back out of the DB.
