@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     CONFIDENCE_THRESHOLD: float = 0.75
     GEMINI_TIMEOUT_SECONDS: int = 120
     STARTUP_RECOVERY_STALE_MINUTES: int = 10
+    MAX_FILES_PER_UPLOAD: int = 150
 
     # Gemini quota (Tier 1 billing: 4000 RPM, unlimited RPD — 90% safety buffer applied)
     GEMINI_RPM_CAP: int = 3600

@@ -218,6 +218,9 @@ def _is_model_not_found(err_str: str) -> bool:
 _503_BACKOFFS = [5, 15, 30, 60]  # wait seconds before attempts 2, 3, 4, 5
 _MAX_503_ATTEMPTS = 5
 
+_429_BACKOFFS = [30, 60, 90, 120]  # wait seconds before rate-limit retries 2, 3, 4, 5
+_MAX_429_ATTEMPTS = 4
+
 
 def _http_timeout_ms() -> int:
     # google-genai's HttpOptions.timeout is in MILLISECONDS; our setting is in seconds.
@@ -323,10 +326,11 @@ async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "imag
 
     attempt = 0
     consecutive_503 = 0
+    consecutive_429 = 0
 
     while True:
         uploaded_file = None
-        total_attempt = attempt + consecutive_503
+        total_attempt = attempt + consecutive_503 + consecutive_429
         try:
             prompt_text = f"Filename (context only, do not use to guess fields): {filename}\n\n"
             prompt_text += EXTRACTION_PROMPT if total_attempt == 0 else STRICT_PROMPT
@@ -443,11 +447,21 @@ async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "imag
                 )
                 await asyncio.sleep(wait)
             elif _is_rate_limit(err_str):
-                attempt += 1
-                if attempt >= settings.MAX_RETRIES:
-                    break
-                logger.warning(f"Rate limit — waiting {settings.RETRY_WAIT_SECONDS}s before retry...")
-                await asyncio.sleep(settings.RETRY_WAIT_SECONDS)
+                consecutive_429 += 1
+                if consecutive_429 >= _MAX_429_ATTEMPTS:
+                    logger.error(
+                        f"[{filename}] Failed after {_MAX_429_ATTEMPTS} rate-limit (429) waits — giving up"
+                    )
+                    raise RuntimeError(
+                        f"Rate limit exceeded — Gemini API returned 429 after "
+                        f"{_MAX_429_ATTEMPTS} backoff waits"
+                    ) from e
+                wait = _429_BACKOFFS[consecutive_429 - 1]
+                logger.warning(
+                    f"[{filename}] Rate limit (429) received, retrying in {wait}s "
+                    f"(attempt {consecutive_429 + 1}/{_MAX_429_ATTEMPTS})"
+                )
+                await asyncio.sleep(wait)
             else:
                 attempt += 1
                 if attempt >= settings.MAX_RETRIES:
