@@ -120,10 +120,10 @@ async def test_jobs_list_reports_completed_with_errors_and_page_counts(make_job,
 async def test_download_succeeds_for_completed_with_errors(make_job, patch_db, fake_user, monkeypatch):
     import app.api.routes_download as rd
 
-    async def fake_download_excel(key):
-        return b"fake-excel-bytes"
+    async def fake_create_signed_url(key, expires_in=300):
+        return f"https://signed.example/{key}?exp={expires_in}"
 
-    monkeypatch.setattr(rd, "download_excel", fake_download_excel)
+    monkeypatch.setattr(rd, "create_signed_url", fake_create_signed_url)
 
     job_id = await make_job(
         user_id=fake_user.id, status="completed_with_errors", excel_path="user123/job123.xlsx",
@@ -131,22 +131,22 @@ async def test_download_succeeds_for_completed_with_errors(make_job, patch_db, f
 
     response = await download_excel_route(str(job_id), current_user=fake_user)
 
-    assert response.status_code == 200
-    assert response.body == b"fake-excel-bytes"
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://signed.example/user123/job123.xlsx?exp=300"
 
 
 async def test_download_succeeds_for_plain_done(make_job, patch_db, fake_user, monkeypatch):
     import app.api.routes_download as rd
 
-    async def fake_download_excel(key):
-        return b"fake-excel-bytes"
+    async def fake_create_signed_url(key, expires_in=300):
+        return f"https://signed.example/{key}?exp={expires_in}"
 
-    monkeypatch.setattr(rd, "download_excel", fake_download_excel)
+    monkeypatch.setattr(rd, "create_signed_url", fake_create_signed_url)
 
     job_id = await make_job(user_id=fake_user.id, status="done", excel_path="user123/job123.xlsx")
 
     response = await download_excel_route(str(job_id), current_user=fake_user)
-    assert response.status_code == 200
+    assert response.status_code == 302
 
 
 async def test_download_rejected_while_still_processing(make_job, patch_db, fake_user):
