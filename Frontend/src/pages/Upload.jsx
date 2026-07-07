@@ -68,7 +68,7 @@ export default function Upload({ navigate, toast }) {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 18 }}>
+      <div className="upload-layout">
         <div>
           <div
             className={`dropzone ${drag ? 'drag' : ''}`}
@@ -115,7 +115,7 @@ export default function Upload({ navigate, toast }) {
                     <div className="fmeta">{(f.size / 1024).toFixed(0)} KB</div>
                   </div>
                   <span className="badge badge-gray">Ready</span>
-                  <button className="icon-btn" style={{ width: 28, height: 28 }} onClick={() => remove(i)}>
+                  <button className="icon-btn" onClick={() => remove(i)}>
                     <Ic.close style={{ width: 14, height: 14 }} />
                   </button>
                 </div>

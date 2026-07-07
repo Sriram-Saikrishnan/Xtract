@@ -120,7 +120,8 @@ export default function Dashboard({ navigate, toast }) {
                 <div style={{ fontSize: 12.5 }}>Upload your first invoice to get started.</div>
               </div>
             ) : (
-              <table className="tbl">
+              <div style={{ overflowX: 'auto' }}>
+              <table className="tbl" style={{ minWidth: 640 }}>
                 <thead>
                   <tr><th>Job ID</th><th>Files</th><th>Status</th><th>Verified</th><th>Flagged</th><th>Errors</th><th>Date</th><th style={{ width: 44 }}></th></tr>
                 </thead>
@@ -137,7 +138,7 @@ export default function Dashboard({ navigate, toast }) {
                       <td style={{ padding: '0 10px' }}>
                         <button
                           className="icon-btn row-del"
-                          style={{ width: 28, height: 28, borderRadius: 7, color: 'var(--text-3)' }}
+                          style={{ color: 'var(--text-3)' }}
                           title="Delete job"
                           onClick={e => { e.stopPropagation(); setDeleteModal(j); }}
                         >
@@ -148,6 +149,7 @@ export default function Dashboard({ navigate, toast }) {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </div>
 
