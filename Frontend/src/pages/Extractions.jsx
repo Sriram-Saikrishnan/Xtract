@@ -4,6 +4,7 @@ import StatusBadge from '../components/StatusBadge';
 import ConfBadge from '../components/ConfBadge';
 import FileIcon from '../components/FileIcon';
 import ConfirmDeleteModal from '../components/ConfirmDeleteModal';
+import FlagReasons from '../components/FlagReasons';
 import { apiFetch, downloadExcel, fmt, fmtDate, API_BASE } from '../utils/formatters';
 
 const TOKEN_KEY = 'xtract_token';
@@ -336,6 +337,7 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
                           <div className="kv-row"><span className="k">Supplier</span><span className="v">{inv.supplier_name || '—'}</span></div>
                           <div className="kv-row"><span className="k">Total</span><span className="v amount">₹{fmt(inv.grand_total)}</span></div>
                         </div>
+                        {inv.flags && <FlagReasons flags={inv.flags} />}
                         <div className="file-card-foot">
                           {inv.confidence_score ? <ConfBadge value={inv.confidence_score} /> : <span className="muted" style={{ fontSize: 11.5 }}>—</span>}
                           {isFailed
