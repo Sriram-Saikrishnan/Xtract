@@ -8,6 +8,11 @@ import { apiFetch, downloadExcel, fmt, fmtDate, API_BASE } from '../utils/format
 
 const TOKEN_KEY = 'xtract_token';
 
+const VERIFIED_STATUSES = new Set(['VERIFIED', 'verified', 'done', 'completed']);
+
+// Every non-verified invoice (NEEDS_REVIEW, DUPLICATE, ERROR, failed…) is "flagged".
+const statusBucket = (status) => (VERIFIED_STATUSES.has(status) ? 'verified' : 'flagged');
+
 function toLocalDateString(date) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -130,6 +135,7 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
   const [loadingJobs, setLoadingJobs] = useState(true);
   const [loadingInv, setLoadingInv] = useState({});
   const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all'); // all | verified | flagged
   const [deleteModal, setDeleteModal] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [masterModal, setMasterModal] = useState(false);
@@ -227,6 +233,19 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
           <Ic.search style={{ width: 16, height: 16, color: 'var(--text-3)' }} />
           <input placeholder="Search supplier or invoice…" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
+        <div className="seg" role="tablist" aria-label="Filter invoices by status">
+          {[['all', 'All'], ['verified', 'Verified'], ['flagged', 'Flagged']].map(([val, label]) => (
+            <button
+              key={val}
+              role="tab"
+              aria-selected={statusFilter === val}
+              className={`seg-btn ${statusFilter === val ? 'active' : ''}`}
+              onClick={() => setStatusFilter(val)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {loadingJobs ? (
@@ -241,11 +260,13 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
         </div>
       ) : jobs.map(job => {
         const isOpen = expanded[job.id];
-        const jobInvs = (invoices[job.id] || []).filter(inv =>
-          !search ||
-          (inv.supplier_name || '').toLowerCase().includes(search.toLowerCase()) ||
-          (inv.invoice_number || '').toLowerCase().includes(search.toLowerCase())
-        );
+        const jobInvs = (invoices[job.id] || []).filter(inv => {
+          const matchesStatus = statusFilter === 'all' || statusBucket(inv.status) === statusFilter;
+          const matchesSearch = !search ||
+            (inv.supplier_name || '').toLowerCase().includes(search.toLowerCase()) ||
+            (inv.invoice_number || '').toLowerCase().includes(search.toLowerCase());
+          return matchesStatus && matchesSearch;
+        });
         const dateStr = fmtDate(job.created_at);
         return (
           <div key={job.id} style={{ marginBottom: 22 }}>
@@ -293,7 +314,7 @@ export default function Extractions({ navigate, toast, highlightJobId }) {
                 <div className="loading"><span className="spinner" style={{ borderColor: 'var(--border)', borderTopColor: 'var(--green)' }}></span> Loading invoices…</div>
               ) : jobInvs.length === 0 ? (
                 <div style={{ padding: '24px', color: 'var(--text-3)', fontSize: 13, textAlign: 'center' }}>
-                  {search ? 'No invoices match your search.' : 'No invoices extracted for this job.'}
+                  {search || statusFilter !== 'all' ? 'No invoices match the current filter.' : 'No invoices extracted for this job.'}
                 </div>
               ) : (
                 <div className="file-grid">
