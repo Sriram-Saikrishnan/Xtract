@@ -14,7 +14,10 @@ from app.core.file_cleaner import start_scheduler, stop_scheduler
 from app.core.rate_limiter import limiter
 from app.core.startup_recovery import recover_interrupted_jobs
 from app.database import init_db, AsyncSessionLocal
-from app.api import routes_upload, routes_status, routes_download, routes_review, routes_quota, routes_jobs, routes_auth
+from app.api import (
+    routes_upload, routes_status, routes_download, routes_quota, routes_jobs, routes_auth,
+    routes_projects, routes_blueprints, routes_results,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,9 +60,11 @@ app.include_router(routes_auth.router)
 app.include_router(routes_upload.router, tags=["Upload"])
 app.include_router(routes_status.router, tags=["Status"])
 app.include_router(routes_download.router, tags=["Download"])
-app.include_router(routes_review.router, tags=["Review"])
 app.include_router(routes_quota.router, tags=["Quota"])
 app.include_router(routes_jobs.router)
+app.include_router(routes_projects.router)
+app.include_router(routes_blueprints.router)
+app.include_router(routes_results.router)
 
 
 @app.get("/", include_in_schema=False)

@@ -1,12 +1,20 @@
 import { Ic } from './icons';
 import { useAuth } from '../context/AuthContext';
 
+const PROJECTS_PAGES = new Set(['projects', 'project-form', 'project-detail', 'blueprint-builder']);
+const RESULTS_PAGES = new Set(['results', 'result-detail']);
+
 export default function Sidebar({ page, navigate, activeJobId }) {
   const { user, logout } = useAuth();
+  const isActive = (id) => {
+    if (id === 'projects') return PROJECTS_PAGES.has(page);
+    if (id === 'dashboard') return page === 'dashboard' || RESULTS_PAGES.has(page);
+    return page === id;
+  };
 
   const top = [
     { id: 'dashboard', label: 'Dashboard', icon: Ic.dashboard },
-    { id: 'extractions', label: 'Extractions', icon: Ic.extract },
+    { id: 'projects', label: 'Projects', icon: Ic.extract },
     { id: 'upload', label: 'Upload', icon: Ic.upload },
   ];
   const bot = [
@@ -38,7 +46,7 @@ export default function Sidebar({ page, navigate, activeJobId }) {
         {top.map(it => {
           const I = it.icon;
           return (
-            <button key={it.id} className={`nav-item ${page === it.id ? 'active' : ''}`} onClick={() => navigate(it.id)}>
+            <button key={it.id} className={`nav-item ${isActive(it.id) ? 'active' : ''}`} onClick={() => navigate(it.id)}>
               <I className="nav-icon" />
               <span>{it.label}</span>
             </button>

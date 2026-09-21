@@ -8,9 +8,8 @@ const TERMINAL_STATUSES = ['done', 'completed_with_errors', 'error'];
 const STATUS_POLL_MS = 3000;
 
 const STAGES = [
-  { id: 'extraction', label: 'Extraction',          desc: 'Extracting data from documents' },
-  { id: 'compliance', label: 'Compliance Checks',   desc: 'Math validation and duplicate detection' },
-  { id: 'excel',      label: 'Excel Report',        desc: 'Building and uploading results' },
+  { id: 'extraction', label: 'Extraction',   desc: 'Extracting data from documents' },
+  { id: 'excel',      label: 'Excel Report', desc: 'Building and uploading results' },
 ];
 
 const INIT_STAGE = { status: 'pending', detail: '', current: 0, total: 0, startTime: null, duration: null };
@@ -36,7 +35,6 @@ function fmtFinal(ms) {
 export default function Processing({ navigate, toast, jobId, uploadedFiles, retryMode = false, retryCount = 0 }) {
   const [stages, setStages] = useState({
     extraction: { ...INIT_STAGE },
-    compliance: { ...INIT_STAGE },
     excel:      { ...INIT_STAGE },
   });
   const [completionData, setCompletionData] = useState(null);
@@ -67,7 +65,7 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles, retr
       if (!res.ok) { toast('Retry failed'); return; }
       const data = await res.json();
       if (data.retrying === 0) { toast('No pages to retry'); return; }
-      setStages({ extraction: { ...INIT_STAGE }, compliance: { ...INIT_STAGE }, excel: { ...INIT_STAGE } });
+      setStages({ extraction: { ...INIT_STAGE }, excel: { ...INIT_STAGE } });
       setCompletionData(null);
       setJobStatus('processing');
       setFinalDuration(null);
@@ -185,9 +183,6 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles, retr
 
         if (TERMINAL_STATUSES.includes(data.status)) {
           finish(data.status, {
-            verified: data.verified_count,
-            flagged: data.flagged_count,
-            errors: data.error_count,
             completed_pages: data.completed_pages,
             failed_pages: data.failed_pages,
             total_pages: data.total_pages,
@@ -207,14 +202,10 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles, retr
     ? fmtFinal(finalDuration)
     : null;
 
-  // Every page lands in exactly one terminal bucket — verified, flagged, or
-  // failed — and these three must sum to total_pages. "errors" alone used to
-  // be the only failure signal shown here, which hid pages that failed
-  // before ever producing a bill (e.g. unreadable files). Show failed_pages
-  // explicitly so the displayed counts are always reconcilable with total.
-  const failedCount = completionData?.failed_pages ?? completionData?.errors ?? 0;
+  const failedCount = completionData?.failed_pages ?? 0;
+  const completedCount = completionData?.completed_pages ?? 0;
   const summary = completionData
-    ? `${completionData.verified} verified · ${completionData.flagged} flagged · ${failedCount} failed`
+    ? `${completedCount} extracted · ${failedCount} failed`
     : '';
 
   const progressCurrent = inRetryMode ? stages.extraction.current : pageProgress.completed;
@@ -261,7 +252,7 @@ export default function Processing({ navigate, toast, jobId, uploadedFiles, retr
             <button className="btn btn-secondary" onClick={() => downloadExcel(jobId).catch(() => toast('Download failed'))}>
               <Ic.download style={{ width: 14, height: 14 }} /> Download Excel
             </button>
-            <button className="btn btn-primary btn-lg" onClick={() => navigate('extractions', { jobId })}>
+            <button className="btn btn-primary btn-lg" onClick={() => navigate('results', { jobId })}>
               View results <Ic.arrow style={{ width: 14, height: 14 }} />
             </button>
           </div>

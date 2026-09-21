@@ -42,9 +42,7 @@ function statusResponse(overrides = {}) {
       status: 'processing',
       total_files: 5,
       processed_files: 0,
-      verified_count: 0,
-      flagged_count: 0,
-      error_count: 0,
+      failed_files: 0,
       total_pages: 5,
       completed_pages: 0,
       failed_pages: 0,
@@ -117,7 +115,6 @@ describe('Processing.jsx — terminal states', () => {
       completed_pages: 4,
       failed_pages: 1,
       total_pages: 5,
-      error_count: 1,
     }));
 
     render(<Processing navigate={vi.fn()} toast={vi.fn()} jobId="job-1" />);

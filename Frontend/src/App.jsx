@@ -6,8 +6,12 @@ import Toast from './components/Toast';
 import Dashboard from './pages/Dashboard';
 import Upload from './pages/Upload';
 import Processing from './pages/Processing';
-import Extractions from './pages/Extractions';
-import Detail from './pages/Detail';
+import ProjectsList from './pages/ProjectsList';
+import ProjectForm from './pages/ProjectForm';
+import ProjectDetail from './pages/ProjectDetail';
+import BlueprintBuilder from './pages/BlueprintBuilder';
+import ResultsList from './pages/ResultsList';
+import ResultDetail from './pages/ResultDetail';
 import Profile from './pages/Profile';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
@@ -35,22 +39,28 @@ export default function App() {
     window.addEventListener(ACTIVE_JOB_EVENT, sync);
     return () => window.removeEventListener(ACTIVE_JOB_EVENT, sync);
   }, []);
-  const [invoiceId, setInvoiceId] = useState(null);
   const [uploadedFiles, setUploadedFiles] = useState(null);
   const [retryMode, setRetryMode] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
+  const [projectId, setProjectId] = useState(null);
+  const [blueprintId, setBlueprintId] = useState(null);
+  const [resultId, setResultId] = useState(null);
   const [toastMsg, setToastMsg] = useState(null);
   const [authPage, setAuthPage] = useState('login');
   const toast = msg => setToastMsg(msg);
 
   const navigate = (newPage, opts = {}) => {
     if (opts.jobId !== undefined) setJobId(opts.jobId);
-    if (opts.invoiceId !== undefined) setInvoiceId(opts.invoiceId);
     if (opts.uploadedFiles !== undefined) setUploadedFiles(opts.uploadedFiles);
     if (opts.retryMode !== undefined) setRetryMode(opts.retryMode);
     else if (newPage !== 'processing') setRetryMode(false);
     if (opts.retryCount !== undefined) setRetryCount(opts.retryCount);
     else if (newPage !== 'processing') setRetryCount(0);
+    if (opts.projectId !== undefined) setProjectId(opts.projectId);
+    else if (newPage !== 'project-form' && newPage !== 'project-detail' && newPage !== 'blueprint-builder' && newPage !== 'upload') setProjectId(null);
+    if (opts.blueprintId !== undefined) setBlueprintId(opts.blueprintId);
+    else if (newPage !== 'blueprint-builder' && newPage !== 'upload') setBlueprintId(null);
+    if (opts.resultId !== undefined) setResultId(opts.resultId);
     setPage(newPage);
   };
 
@@ -69,12 +79,16 @@ export default function App() {
 
   let Content;
   switch (page) {
-    case 'upload':      Content = <Upload {...pageProps} />; break;
-    case 'processing':  Content = <Processing {...pageProps} jobId={jobId} uploadedFiles={uploadedFiles} retryMode={retryMode} retryCount={retryCount} />; break;
-    case 'extractions': Content = <Extractions {...pageProps} highlightJobId={jobId} />; break;
-    case 'detail':      Content = <Detail {...pageProps} invoiceId={invoiceId} jobId={jobId} />; break;
-    case 'profile':     Content = <Profile {...pageProps} />; break;
-    default:            Content = <Dashboard {...pageProps} />;
+    case 'upload':            Content = <Upload {...pageProps} projectId={projectId} blueprintId={blueprintId} />; break;
+    case 'processing':        Content = <Processing {...pageProps} jobId={jobId} uploadedFiles={uploadedFiles} retryMode={retryMode} retryCount={retryCount} />; break;
+    case 'projects':          Content = <ProjectsList {...pageProps} />; break;
+    case 'project-form':      Content = <ProjectForm {...pageProps} projectId={projectId} />; break;
+    case 'project-detail':    Content = <ProjectDetail {...pageProps} projectId={projectId} />; break;
+    case 'blueprint-builder': Content = <BlueprintBuilder {...pageProps} blueprintId={blueprintId} projectId={projectId} />; break;
+    case 'results':           Content = <ResultsList {...pageProps} jobId={jobId} />; break;
+    case 'result-detail':     Content = <ResultDetail {...pageProps} resultId={resultId} jobId={jobId} />; break;
+    case 'profile':           Content = <Profile {...pageProps} />; break;
+    default:                  Content = <Dashboard {...pageProps} />;
   }
 
   return (

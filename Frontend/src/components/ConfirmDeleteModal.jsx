@@ -3,7 +3,7 @@ import { fmtDate } from '../utils/formatters';
 
 export default function ConfirmDeleteModal({ job, onConfirm, onCancel, loading }) {
   if (!job) return null;
-  const extracted = (job.verified_count || 0) + (job.flagged_count || 0) + (job.error_count || 0);
+  const extracted = job.completed_pages || 0;
   return (
     <div className="modal-overlay" onClick={onCancel}>
       <div className="modal" onClick={e => e.stopPropagation()}>
@@ -21,7 +21,7 @@ export default function ConfirmDeleteModal({ job, onConfirm, onCancel, loading }
           {[
             ['Job ID', <span className="text-mono" style={{ fontSize: 12 }}>{job.id.slice(0, 8)}…</span>],
             ['Files uploaded', <span className="text-mono">{job.total_files}</span>],
-            ['Invoices extracted', <span className="text-mono">{extracted}</span>],
+            ['Pages extracted', <span className="text-mono">{extracted}</span>],
             ['Created', fmtDate(job.created_at)],
           ].map(([k, v]) => (
             <div key={k} className="row between" style={{ fontSize: 13, marginBottom: 6 }}>
@@ -32,7 +32,7 @@ export default function ConfirmDeleteModal({ job, onConfirm, onCancel, loading }
         </div>
 
         <p style={{ fontSize: 13, color: 'var(--text-2)', margin: '0 0 22px', lineHeight: 1.6 }}>
-          All extracted invoices, line items, and the Excel report for this job will be permanently deleted.
+          All extraction results and the Excel report for this job will be permanently deleted.
           {job.excel_ready ? ' Any report not yet downloaded will be lost.' : ''}
         </p>
 

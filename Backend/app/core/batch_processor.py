@@ -1,3 +1,10 @@
+"""
+Batch extraction pipeline — blueprint-driven, generic across projects.
+
+Per page: build (once per job) a dynamic pydantic model + prompt from the
+job's blueprint fields, run Gemini extraction, and write straight to
+extraction_results. No verify/tax/duplicate steps, no flags.
+"""
 import asyncio
 import logging
 import re
@@ -8,27 +15,34 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from sqlalchemy import func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update
 
 from app.config import settings
-from app.core.duplicate import check_duplicate
-from app.core.extractor import normalize
-from app.core.gemini_client import extract_bill, get_mime_type, split_pdf_pages
-from app.core.tax_validator import validate_tax
+from app.core.gemini_client import (
+    build_extraction_model,
+    build_extraction_prompt,
+    extract_with_blueprint,
+    get_mime_type,
+    split_pdf_pages,
+)
 from app.core.job_store import job_store
-from app.core.verifier import verify
 from app.core.storage import upload_excel
-from app.database import AsyncSessionLocal, InvoiceORM, JobORM, JobPageORM, LineItemORM
+from app.database import (
+    AsyncSessionLocal,
+    BlueprintFieldORM,
+    BlueprintORM,
+    ExtractionResultORM,
+    JobORM,
+    JobPageORM,
+    ProjectORM,
+)
 from app.excel.excel_builder import build_excel
-from app.models.bill import BillStatus, ExtractedBill
 
 logger = logging.getLogger(__name__)
 
 _MODEL_NOT_FOUND_PREFIX = "Model unavailable:"
 # Job IDs for which the model-not-found ERROR has already been logged once —
-# every subsequent page in the same job hits the same permanent config error,
-# so this dedupes the log line without needing to thread job_id into extract_bill.
+# every subsequent page in the same job hits the same permanent config error.
 _model_not_found_logged_jobs: set[str] = set()
 
 
@@ -45,19 +59,38 @@ class PageTask:
 @dataclass
 class PageResult:
     task: PageTask
-    bill: Optional[ExtractedBill]
+    data: Optional[dict]
     error: Optional[str]
     page_row_index: int = 0
+
+
+async def _load_blueprint_context(blueprint_id: Optional[str]) -> tuple[Optional[type], Optional[str]]:
+    """Fetch the blueprint's fields + parent project.context and build the
+    dynamic pydantic model and extraction prompt once per job."""
+    if not blueprint_id:
+        return None, None
+    async with AsyncSessionLocal() as session:
+        blueprint = await session.get(BlueprintORM, uuid.UUID(blueprint_id))
+        if blueprint is None:
+            return None, None
+        result = await session.execute(
+            select(BlueprintFieldORM)
+            .where(BlueprintFieldORM.blueprint_id == blueprint.id)
+            .order_by(BlueprintFieldORM.sort_order)
+        )
+        fields = list(result.scalars().all())
+        project = await session.get(ProjectORM, blueprint.project_id)
+
+    model_cls = build_extraction_model(str(blueprint.id), fields)
+    prompt_text = build_extraction_prompt(project, blueprint, fields)
+    return model_cls, prompt_text
 
 
 async def _flatten_to_page_tasks(file_list: List[tuple]) -> tuple[List[PageTask], List[tuple[str, str]]]:
     """
     Split every uploaded file into its page-level work units up front.
-    Sequential and fast (CPU-bound PDF split, no Gemini calls) — a corrupt
-    file only costs that one file, the rest of the batch still flattens.
-    Returns (page_tasks, failed_files) — failed_files is (filename, error) pairs
-    for files that could not be read/split at all, so the caller can still give
-    each one a terminal job_pages row instead of dropping it silently.
+    Returns (page_tasks, failed_files) — failed_files is (filename, error)
+    pairs for files that could not be read/split at all.
     """
     page_tasks: List[PageTask] = []
     failed_files: List[tuple[str, str]] = []
@@ -69,7 +102,7 @@ async def _flatten_to_page_tasks(file_list: List[tuple]) -> tuple[List[PageTask]
 
             if mime == "application/pdf":
                 page_bytes_list = await asyncio.to_thread(split_pdf_pages, file_bytes)
-                logger.info(f"{fn}: {len(page_bytes_list)} page(s) — each processed as a separate invoice")
+                logger.info(f"{fn}: {len(page_bytes_list)} page(s)")
                 for page_num, page_bytes in enumerate(page_bytes_list, 1):
                     label = f"{Path(fn).stem}_p{page_num}.pdf"
                     page_tasks.append(PageTask(fn, label, mime, page_bytes, page_num))
@@ -86,13 +119,6 @@ async def _flatten_to_page_tasks(file_list: List[tuple]) -> tuple[List[PageTask]
 async def _init_job_pages(
     job_id: str, page_tasks: List[PageTask], failed_files: List[tuple[str, str]]
 ) -> None:
-    """
-    Insert one job_pages row per page (status=queued), plus one row per file
-    that failed to read/split (status=failed) — every uploaded file lands in
-    exactly one row up front, so none can be silently dropped from the count.
-    Sets jobs.total_pages to the full page+failure count and pre-seeds
-    jobs.failed_pages so split failures are reflected immediately.
-    """
     async with AsyncSessionLocal() as session:
         for index, task in enumerate(page_tasks):
             session.add(JobPageORM(
@@ -127,7 +153,6 @@ async def _init_job_pages(
 async def _set_page_status(
     job_id: str, page_index: int, status: str, error_message: Optional[str] = None
 ) -> None:
-    """Update a single job_pages row. updated_at is always set explicitly — never relies on DB default."""
     async with AsyncSessionLocal() as session:
         await session.execute(
             update(JobPageORM)
@@ -138,10 +163,7 @@ async def _set_page_status(
 
 
 async def _increment_job_counter(job_id: str, column: str, by: int = 1) -> None:
-    """
-    Atomic SQL increment (SET col = col + :by) — never read-then-write.
-    Safe under concurrent page completions racing on the same job row.
-    """
+    """Atomic SQL increment — safe under concurrent page completions."""
     async with AsyncSessionLocal() as session:
         col = getattr(JobORM, column)
         await session.execute(
@@ -152,32 +174,55 @@ async def _increment_job_counter(job_id: str, column: str, by: int = 1) -> None:
         await session.commit()
 
 
+async def _save_result(
+    job_id: str, blueprint_id: Optional[str], task: PageTask,
+    data: Optional[dict], status: str, error: Optional[str] = None,
+) -> None:
+    """Always writes a row — success or failure — so extraction_results is a
+    complete record of every page (matches job_pages 1:1) rather than only
+    ever containing successes indistinguishable from a real empty result."""
+    confidence = float(data.get("confidence_score") or 0.0) if data else 0.0
+    row_data = data
+    if status != "done" and error:
+        row_data = {"_error": error}
+    async with AsyncSessionLocal() as session:
+        session.add(ExtractionResultORM(
+            id=uuid.uuid4(),
+            job_id=uuid.UUID(job_id),
+            blueprint_id=uuid.UUID(blueprint_id) if blueprint_id else None,
+            source_filename=task.filename,
+            status=status,
+            confidence_score=confidence,
+            data=row_data,
+            extracted_at=datetime.utcnow(),
+        ))
+        await session.commit()
+
+
 async def _extract_one_page(
-    task: PageTask, job_id: str, sem: asyncio.Semaphore, total_pages: int, index: int,
-    db_index: Optional[int] = None,
+    task: PageTask, job_id: str, blueprint_id: Optional[str], model_cls: type, prompt_text: str,
+    sem: asyncio.Semaphore, total_pages: int, index: int, db_index: Optional[int] = None,
 ) -> PageResult:
-    """
-    Bounded by the extraction semaphore. Never lets an exception escape —
+    """Bounded by the extraction semaphore. Never lets an exception escape —
     failures are captured into the PageResult so one bad page cannot cancel
-    its siblings in asyncio.gather.
-    db_index: row index in job_pages (defaults to index). Pass explicitly for
-    retry runs where SSE progress index differs from the original page_index.
-    """
+    its siblings in asyncio.gather."""
     page_row_index = db_index if db_index is not None else index
     async with sem:
         await _set_page_status(job_id, page_row_index, "processing")
         try:
-            raw = await extract_bill(task.page_bytes, task.label, task.mime)
-            if raw is None:
+            data = await extract_with_blueprint(task.page_bytes, task.label, task.mime, model_cls, prompt_text)
+            if data is None:
                 logger.warning(f"{task.label}: extraction returned None")
+                await _save_result(job_id, blueprint_id, task, None, status="failed", error="extraction returned None")
                 await _set_page_status(job_id, page_row_index, "failed", error_message="extraction returned None")
                 await _increment_job_counter(job_id, "failed_pages")
-                return PageResult(task, bill=None, error="extraction returned None", page_row_index=page_row_index)
-            bill = normalize(raw, task.filename)
-            logger.info(f"{task.label}: {len(bill.line_items)} item(s) extracted")
+                return PageResult(task, data=None, error="extraction returned None", page_row_index=page_row_index)
+
+            await _save_result(job_id, blueprint_id, task, data, status="done")
+            logger.info(f"{task.label}: extracted, confidence={data.get('confidence_score')}")
             await _set_page_status(job_id, page_row_index, "done")
             await _increment_job_counter(job_id, "completed_pages")
-            return PageResult(task, bill=bill, error=None, page_row_index=page_row_index)
+            return PageResult(task, data=data, error=None, page_row_index=page_row_index)
         except Exception as e:
             err_str = str(e)
             if err_str.startswith(_MODEL_NOT_FOUND_PREFIX):
@@ -186,9 +231,10 @@ async def _extract_one_page(
                     logger.error(f"Job {job_id}: {err_str}")
             else:
                 logger.error(f"{task.label}: extraction failed — {e}")
+            await _save_result(job_id, blueprint_id, task, None, status="failed", error=err_str)
             await _set_page_status(job_id, page_row_index, "failed", error_message=err_str)
             await _increment_job_counter(job_id, "failed_pages")
-            return PageResult(task, bill=None, error=err_str, page_row_index=page_row_index)
+            return PageResult(task, data=None, error=err_str, page_row_index=page_row_index)
         finally:
             job_store.increment(job_id, "processed_files")
             await job_store.push_event(job_id, "stage_progress", {
@@ -199,81 +245,49 @@ async def _extract_one_page(
             })
 
 
-def _trunc(value: Optional[str], limit: int) -> Optional[str]:
-    return value[:limit] if value and len(value) > limit else value
+async def _finalize_job(job_id: str, user_id: str, total_pages: int, total_done: int) -> None:
+    t0 = time.monotonic()
+    await job_store.push_event(job_id, "stage_start", {"stage": "excel", "total": 1})
+    page_failures = total_pages - total_done
+    terminal_status = "completed_with_errors" if page_failures > 0 else "done"
+    excel_path = None
 
+    try:
+        await job_store.push_event(job_id, "stage_progress", {
+            "stage": "excel", "detail": "Building Excel report...", "current": 1, "total": 1,
+        })
+        local_excel = await build_excel(job_id)
+        await job_store.push_event(job_id, "stage_progress", {
+            "stage": "excel", "detail": "Uploading to storage...", "current": 1, "total": 1,
+        })
+        excel_path = await upload_excel(user_id, job_id, local_excel)
+        try:
+            local_excel.unlink(missing_ok=True)
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error(f"Job {job_id}: Excel build/upload failed: {e}")
+        terminal_status = "completed_with_errors"
 
-async def _save_bill(session: AsyncSession, job_id: str, bill: ExtractedBill):
-    invoice_id = uuid.uuid4()
-    flags_str = "; ".join(bill.flags)
+    async with AsyncSessionLocal() as session:
+        job = await session.get(JobORM, uuid.UUID(job_id))
+        if job:
+            job.status = terminal_status
+            job.completed_at = datetime.utcnow()
+            job.excel_path = excel_path
+            await session.commit()
 
-    invoice = InvoiceORM(
-        id=invoice_id,
-        job_id=uuid.UUID(job_id),
-        source_filename=bill.source_filename,
-        category=bill.category,
-        invoice_number=bill.invoice_number,
-        invoice_date=_trunc(bill.invoice_date, 20),
-        challan_number=bill.challan_number,
-        document_type=bill.document_type,
-        supplier_name=bill.supplier_name,
-        supplier_gstin=_trunc(bill.supplier_gstin, 20),
-        supplier_state=bill.supplier_state,
-        supplier_address=bill.supplier_address,
-        supplier_email=bill.supplier_email,
-        supplier_phone=bill.supplier_phone,
-        supplier_bank=bill.supplier_bank,
-        supplier_account_number=bill.supplier_account_number,
-        supplier_ifsc=_trunc(bill.supplier_ifsc, 20),
-        buyer_name=bill.buyer_name,
-        buyer_gstin=_trunc(bill.buyer_gstin, 20),
-        place_of_supply=bill.place_of_supply,
-        destination=bill.destination,
-        transport_name=bill.transport_name,
-        lr_number=bill.lr_number,
-        vehicle_number=bill.vehicle_number,
-        eway_bill_number=bill.eway_bill_number,
-        irn_number=bill.irn_number,
-        assessable_value=bill.assessable_value,
-        tax_type=_trunc(bill.tax_type, 20),
-        igst_percent=bill.igst_percent,
-        igst_amount=bill.igst_amount,
-        cgst_percent=bill.cgst_percent,
-        cgst_amount=bill.cgst_amount,
-        sgst_percent=bill.sgst_percent,
-        sgst_amount=bill.sgst_amount,
-        pf_charges=bill.pf_charges,
-        round_off=bill.round_off,
-        grand_total=bill.grand_total,
-        total_weight_kg=bill.total_weight_kg,
-        total_qty=bill.total_qty,
-        confidence_score=bill.confidence_score,
-        status=bill.status.value,
-        flags=flags_str,
-        extracted_at=datetime.utcnow(),
-    )
-    session.add(invoice)
+    job_store.update(job_id, status=terminal_status, completed_at=datetime.utcnow(), excel_ready=excel_path is not None)
 
-    for item in bill.line_items:
-        li = LineItemORM(
-            id=uuid.uuid4(),
-            invoice_id=invoice_id,
-            sr_no=item.sr_no,
-            die_number=item.die_number,
-            po_number=item.po_number,
-            description=item.description,
-            hsn_sac_code=item.hsn_sac_code,
-            grade=item.grade,
-            quantity=item.quantity,
-            quantity_unit=item.quantity_unit,
-            weight_kg=item.weight_kg,
-            rate=item.rate,
-            amount=item.amount,
-        )
-        session.add(li)
-
-    await session.commit()
-    return invoice_id
+    await job_store.push_event(job_id, "stage_complete", {
+        "stage": "excel", "duration_ms": int((time.monotonic() - t0) * 1000),
+    })
+    await job_store.push_event(job_id, "processing_complete", {
+        "completed_pages": total_done,
+        "failed_pages": page_failures,
+        "total_pages": total_pages,
+    })
+    logger.info(f"Job {job_id}: completed, status={terminal_status}")
 
 
 async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: List[str], user_id: str = ""):
@@ -281,14 +295,33 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
     file_list = list(zip(file_paths, filenames))
     job_start = time.monotonic()
 
-    # ── Stage 1: Extraction (flatten to pages, then bounded concurrent extraction) ─
-    t0 = time.monotonic()
+    async with AsyncSessionLocal() as session:
+        job = await session.get(JobORM, uuid.UUID(job_id))
+        blueprint_id = str(job.blueprint_id) if job and job.blueprint_id else None
 
+    model_cls, prompt_text = await _load_blueprint_context(blueprint_id)
+    if model_cls is None:
+        logger.error(f"Job {job_id}: no blueprint set — cannot extract")
+        async with AsyncSessionLocal() as session:
+            job = await session.get(JobORM, uuid.UUID(job_id))
+            if job:
+                job.status = "error"
+                job.completed_at = datetime.utcnow()
+                await session.commit()
+        job_store.update(job_id, status="error", completed_at=datetime.utcnow())
+        await job_store.push_event(job_id, "processing_complete", {"error": "no blueprint set on job"})
+        return
+
+    t0 = time.monotonic()
     page_tasks, failed_files = await _flatten_to_page_tasks(file_list)
     total_pages = len(page_tasks) + len(failed_files)
-    total_errors = len(failed_files)
     if failed_files:
-        job_store.increment(job_id, "error_count", by=len(failed_files))
+        job_store.increment(job_id, "failed_files", by=len(failed_files))
+        for filename, error in failed_files:
+            await _save_result(
+                job_id, blueprint_id, PageTask(filename, filename, "", b"", 1),
+                None, status="failed", error=error,
+            )
 
     await _init_job_pages(job_id, page_tasks, failed_files)
     await job_store.push_event(job_id, "stage_start", {"stage": "extraction", "total": total_pages})
@@ -296,179 +329,27 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
     extraction_sem = asyncio.Semaphore(settings.MAX_CONCURRENT_EXTRACTIONS)
     extraction_results = await asyncio.gather(
         *(
-            _extract_one_page(task, job_id, extraction_sem, total_pages, i)
+            _extract_one_page(task, job_id, blueprint_id, model_cls, prompt_text, extraction_sem, total_pages, i)
             for i, task in enumerate(page_tasks)
         ),
-        return_exceptions=True,  # defensive: _extract_one_page already catches internally
+        return_exceptions=True,
     )
 
-    all_bills: List[tuple[ExtractedBill, int]] = []  # (bill, page_row_index)
+    total_done = 0
     for page_index, result in enumerate(extraction_results):
         if isinstance(result, BaseException):
-            # Should never happen — _extract_one_page catches everything itself.
-            # Guard anyway so a freak escape is counted, not silently dropped,
-            # and the job_pages row doesn't get stuck at "processing" forever.
             logger.error(f"Unexpected exception escaped extraction task: {result}")
-            total_errors += 1
-            job_store.increment(job_id, "error_count")
             await _set_page_status(job_id, page_index, "failed", error_message=str(result))
             await _increment_job_counter(job_id, "failed_pages")
             continue
-        if result.bill is not None:
-            all_bills.append((result.bill, result.page_row_index))
-        else:
-            total_errors += 1
-            job_store.increment(job_id, "error_count")
+        if result.data is not None:
+            total_done += 1
 
     await job_store.push_event(job_id, "stage_complete", {
-        "stage": "extraction",
-        "duration_ms": int((time.monotonic() - t0) * 1000),
+        "stage": "extraction", "duration_ms": int((time.monotonic() - t0) * 1000),
     })
 
-    total_bills = len(all_bills)
-
-    # ── Stage 3: Compliance Checks (sequential — duplicate detection is order-dependent)
-    # + bounded concurrent DB saves (parallelized I/O only, never the compliance logic) ─
-    t0 = time.monotonic()
-    await job_store.push_event(job_id, "stage_start", {"stage": "compliance", "total": total_bills})
-
-    db_sem = asyncio.Semaphore(settings.MAX_CONCURRENT_DB_WRITES)
-    save_tasks: List[asyncio.Task] = []
-    processed_bills: List[ExtractedBill] = []
-    total_verified = 0
-    total_flagged = 0
-
-    async def _save_one(bill_to_save: ExtractedBill, page_row_idx: int, is_verified: bool) -> None:
-        async with db_sem:
-            try:
-                async with AsyncSessionLocal() as session:
-                    await _save_bill(session, job_id, bill_to_save)
-            except Exception as e:
-                logger.error(f"Save failed for {bill_to_save.source_filename}: {e}")
-                job_store.increment(job_id, "error_count")
-                counter = "verified_count" if is_verified else "flagged_count"
-                job_store.increment(job_id, counter, by=-1)
-                nonlocal total_verified, total_flagged
-                if is_verified:
-                    total_verified -= 1
-                else:
-                    total_flagged -= 1
-                await _set_page_status(job_id, page_row_idx, "failed", error_message=f"DB save error: {e}")
-
-    for i, (bill, page_row_idx) in enumerate(all_bills):
-        label = bill.invoice_number or bill.source_filename
-        await job_store.push_event(job_id, "stage_progress", {
-            "stage": "compliance",
-            "detail": f"Checking {label}...",
-            "current": i + 1,
-            "total": total_bills,
-        })
-        # Sequential on purpose: check_duplicate compares against processed_bills
-        # accumulated so far — parallelizing this loop would let two near-duplicate
-        # bills both pass the check before either is recorded.
-        bill = verify(bill)
-        tax_flags = [f["code"] for f in validate_tax(bill)]
-        if tax_flags:
-            bill = bill.model_copy(update={"flags": list(bill.flags) + tax_flags})
-        bill = check_duplicate(bill, processed_bills)
-        processed_bills.append(bill)
-
-        is_verified = bill.status == BillStatus.VERIFIED
-        if is_verified:
-            total_verified += 1
-            job_store.increment(job_id, "verified_count")
-        else:
-            total_flagged += 1
-            job_store.increment(job_id, "flagged_count")
-
-        # Only the DB write is dispatched concurrently (bounded by db_sem) —
-        # compliance logic above stays fully sequential.
-        save_tasks.append(asyncio.create_task(_save_one(bill, page_row_idx, is_verified)))
-
-    # Explicit ordering guard: all saves MUST complete before Excel generation
-    # below reads invoices/line_items back out of the DB.
-    await asyncio.gather(*save_tasks, return_exceptions=True)
-
-    await job_store.push_event(job_id, "stage_complete", {
-        "stage": "compliance",
-        "duration_ms": int((time.monotonic() - t0) * 1000),
-    })
-
-    # ── Stage 4: Excel Report ─────────────────────────────────────────────────
-    t0 = time.monotonic()
-    await job_store.push_event(job_id, "stage_start", {"stage": "excel", "total": 1})
-
-    try:
-        await job_store.push_event(job_id, "stage_progress", {
-            "stage": "excel",
-            "detail": "Building Excel report...",
-            "current": 1,
-            "total": 1,
-        })
-        local_excel = await build_excel(job_id)
-
-        await job_store.push_event(job_id, "stage_progress", {
-            "stage": "excel",
-            "detail": "Uploading to storage...",
-            "current": 1,
-            "total": 1,
-        })
-        storage_path = await upload_excel(user_id, job_id, local_excel)
-        try:
-            local_excel.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-        page_failures = total_pages - len(all_bills)
-        terminal_status = "completed_with_errors" if page_failures > 0 else "done"
-
-        async with AsyncSessionLocal() as session:
-            result = await session.get(JobORM, uuid.UUID(job_id))
-            if result:
-                result.status = terminal_status
-                result.completed_at = datetime.utcnow()
-                result.excel_path = storage_path
-                result.verified_count = total_verified
-                result.flagged_count = total_flagged
-                result.error_count = total_errors
-                await session.commit()
-
-        job_store.update(
-            job_id,
-            status=terminal_status,
-            completed_at=datetime.utcnow(),
-            excel_ready=True,
-            verified_count=total_verified,
-            flagged_count=total_flagged,
-            error_count=total_errors,
-            failed_pages=page_failures,
-            total_pages=total_pages,
-        )
-
-        await job_store.push_event(job_id, "stage_complete", {
-            "stage": "excel",
-            "duration_ms": int((time.monotonic() - t0) * 1000),
-        })
-        await job_store.push_event(job_id, "processing_complete", {
-            "verified": total_verified,
-            "flagged": total_flagged,
-            "errors": total_errors,
-            "failed_pages": page_failures,
-            "total_pages": total_pages,
-            "duration_ms": int((time.monotonic() - job_start) * 1000),
-        })
-        logger.info(f"Job {job_id}: completed. Excel at storage:{storage_path}")
-
-    except Exception as e:
-        logger.error(f"Job {job_id}: Excel build/upload failed: {e}")
-        job_store.update(job_id, status="error")
-        await job_store.push_event(job_id, "processing_complete", {
-            "verified": total_verified,
-            "flagged": total_flagged,
-            "errors": total_errors + 1,
-            "duration_ms": int((time.monotonic() - job_start) * 1000),
-            "error": str(e),
-        })
+    await _finalize_job(job_id, user_id, total_pages, total_done)
 
 
 async def run_retry_processor(
@@ -478,18 +359,25 @@ async def run_retry_processor(
 ) -> None:
     """
     Re-extract only the previously failed pages for a job.
-    Never touches pages with status=done. Idempotent: the endpoint
-    already reset the target pages to 'queued' before firing this task.
+    Never touches pages with status=done. Idempotent: the endpoint already
+    reset the target pages to 'queued' before firing this task.
     """
     retry_total = len(failed_pages)
-    job_start = time.monotonic()
-
     job_store.update(job_id, status="processing")
     await job_store.push_event(job_id, "stage_start", {"stage": "extraction", "total": retry_total})
 
-    # ── Stage 1: Rebuild page tasks from disk ─────────────────────────────
-    page_tasks_with_db_index: List[tuple] = []
+    async with AsyncSessionLocal() as session:
+        job = await session.get(JobORM, uuid.UUID(job_id))
+        blueprint_id = str(job.blueprint_id) if job and job.blueprint_id else None
+        total_pages_on_job = job.total_pages if job else retry_total
 
+    model_cls, prompt_text = await _load_blueprint_context(blueprint_id)
+    if model_cls is None:
+        logger.error(f"Job {job_id}: no blueprint set — cannot retry")
+        await job_store.push_event(job_id, "processing_complete", {"error": "no blueprint set on job"})
+        return
+
+    page_tasks_with_db_index: List[tuple] = []
     for page in failed_pages:
         db_page_index: int = page["page_index"]
         filename: str = page["filename"]
@@ -534,150 +422,30 @@ async def run_retry_processor(
 
         page_tasks_with_db_index.append((PageTask(filename, page_label, mime, page_bytes, 1), db_page_index))
 
-    # ── Stage 2: Extraction (semaphore-bounded, same as original flow) ────
     extraction_sem = asyncio.Semaphore(settings.MAX_CONCURRENT_EXTRACTIONS)
     extraction_results = await asyncio.gather(
         *(
-            _extract_one_page(task, job_id, extraction_sem, retry_total, retry_idx, db_index=db_idx)
+            _extract_one_page(
+                task, job_id, blueprint_id, model_cls, prompt_text, extraction_sem, retry_total, retry_idx, db_index=db_idx
+            )
             for retry_idx, (task, db_idx) in enumerate(page_tasks_with_db_index)
         ),
         return_exceptions=True,
     )
 
-    all_bills: List[ExtractedBill] = []
     for result in extraction_results:
         if isinstance(result, BaseException):
             logger.error(f"Unexpected exception escaped retry extraction: {result}")
             await _increment_job_counter(job_id, "failed_pages")
-            continue
-        if result.bill is not None:
-            all_bills.append(result.bill)
 
-    await job_store.push_event(job_id, "stage_complete", {
-        "stage": "extraction",
-        "duration_ms": int((time.monotonic() - job_start) * 1000),
-    })
+    await job_store.push_event(job_id, "stage_complete", {"stage": "extraction"})
 
-    # ── Stage 3: Compliance + save (sequential duplicate check, parallel saves) ──
-    total_bills = len(all_bills)
-    t0 = time.monotonic()
-    await job_store.push_event(job_id, "stage_start", {"stage": "compliance", "total": total_bills})
+    # Read back accumulated counts — this retry only re-ran a subset of the
+    # job's pages, so completion totals must reflect the whole job, not just
+    # this batch.
+    async with AsyncSessionLocal() as session:
+        job = await session.get(JobORM, uuid.UUID(job_id))
+        completed_pages = job.completed_pages if job else 0
+        total_pages_final = job.total_pages if job else total_pages_on_job
 
-    db_sem = asyncio.Semaphore(settings.MAX_CONCURRENT_DB_WRITES)
-    save_tasks: List[asyncio.Task] = []
-    processed_bills: List[ExtractedBill] = []
-    total_verified = 0
-    total_flagged = 0
-
-    async def _save_one_retry(bill_to_save: ExtractedBill) -> None:
-        async with db_sem:
-            try:
-                async with AsyncSessionLocal() as session:
-                    await _save_bill(session, job_id, bill_to_save)
-            except Exception as e:
-                logger.error(f"Retry save failed for {bill_to_save.source_filename}: {e}")
-
-    for i, bill in enumerate(all_bills):
-        label = bill.invoice_number or bill.source_filename
-        await job_store.push_event(job_id, "stage_progress", {
-            "stage": "compliance",
-            "detail": f"Checking {label}...",
-            "current": i + 1,
-            "total": total_bills,
-        })
-        bill = verify(bill)
-        tax_flags = [f["code"] for f in validate_tax(bill)]
-        if tax_flags:
-            bill = bill.model_copy(update={"flags": list(bill.flags) + tax_flags})
-        bill = check_duplicate(bill, processed_bills)
-        processed_bills.append(bill)
-
-        if bill.status == BillStatus.VERIFIED:
-            total_verified += 1
-            job_store.increment(job_id, "verified_count")
-        else:
-            total_flagged += 1
-            job_store.increment(job_id, "flagged_count")
-
-        save_tasks.append(asyncio.create_task(_save_one_retry(bill)))
-
-    await asyncio.gather(*save_tasks, return_exceptions=True)
-
-    await job_store.push_event(job_id, "stage_complete", {
-        "stage": "compliance",
-        "duration_ms": int((time.monotonic() - t0) * 1000),
-    })
-
-    # ── Stage 4: Rebuild Excel (includes all invoices for the job) ────────
-    t0 = time.monotonic()
-    await job_store.push_event(job_id, "stage_start", {"stage": "excel", "total": 1})
-
-    try:
-        await job_store.push_event(job_id, "stage_progress", {
-            "stage": "excel", "detail": "Building Excel report...", "current": 1, "total": 1,
-        })
-        local_excel = await build_excel(job_id)
-
-        await job_store.push_event(job_id, "stage_progress", {
-            "stage": "excel", "detail": "Uploading to storage...", "current": 1, "total": 1,
-        })
-        storage_path = await upload_excel(user_id, job_id, local_excel)
-        local_excel.unlink(missing_ok=True)
-
-        # Terminal status: check remaining failed pages across the whole job
-        async with AsyncSessionLocal() as session:
-            remaining_q = await session.execute(
-                select(JobPageORM).where(
-                    JobPageORM.job_id == uuid.UUID(job_id),
-                    JobPageORM.status == "failed",
-                )
-            )
-            remaining_count = len(remaining_q.scalars().all())
-
-        terminal_status = "completed_with_errors" if remaining_count > 0 else "done"
-
-        # Atomically promote the job counters:
-        #   verified_count / flagged_count: add the newly extracted bills
-        #   error_count: subtract the pages that now succeeded (floor at 0)
-        succeeded_count = total_verified + total_flagged
-        async with AsyncSessionLocal() as session:
-            await session.execute(
-                update(JobORM)
-                .where(JobORM.id == uuid.UUID(job_id))
-                .values(
-                    status=terminal_status,
-                    completed_at=datetime.utcnow(),
-                    excel_path=storage_path,
-                    verified_count=JobORM.verified_count + total_verified,
-                    flagged_count=JobORM.flagged_count + total_flagged,
-                    error_count=func.greatest(0, JobORM.error_count - succeeded_count),
-                )
-            )
-            await session.commit()
-
-        job_store.update(job_id, status=terminal_status, excel_ready=True, completed_at=datetime.utcnow())
-
-        await job_store.push_event(job_id, "stage_complete", {
-            "stage": "excel",
-            "duration_ms": int((time.monotonic() - t0) * 1000),
-        })
-        await job_store.push_event(job_id, "processing_complete", {
-            "verified": total_verified,
-            "flagged": total_flagged,
-            "errors": remaining_count,
-            "failed_pages": remaining_count,
-            "total_pages": retry_total,
-            "duration_ms": int((time.monotonic() - job_start) * 1000),
-        })
-        logger.info(f"Retry job {job_id}: {terminal_status}. {remaining_count} page(s) still failed.")
-
-    except Exception as e:
-        logger.error(f"Retry job {job_id}: Excel build/upload failed: {e}")
-        job_store.update(job_id, status="error")
-        await job_store.push_event(job_id, "processing_complete", {
-            "verified": total_verified,
-            "flagged": total_flagged,
-            "errors": 1,
-            "duration_ms": int((time.monotonic() - job_start) * 1000),
-            "error": str(e),
-        })
+    await _finalize_job(job_id, user_id, total_pages_final, completed_pages)

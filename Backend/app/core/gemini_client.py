@@ -1,23 +1,117 @@
 import asyncio
 import json
-import re
-import time
 import logging
+import re
 import tempfile
+import time
 from pathlib import Path
+from typing import Any, List, Optional
 
 import httpx
 import pydantic
 from google import genai
 from google.genai import types
+from pydantic import create_model
 
 from app.config import settings
-from app.models.extraction import GeminiExtractionResult
 from app.core.quota_manager import quota_manager, DailyQuotaExceededError
 
 logger = logging.getLogger(__name__)
 
 client = genai.Client(api_key=settings.GEMINI_API_KEY)
+
+_TYPE_MAP = {
+    "string": str,
+    "number": float,
+    "date": str,
+    "currency": float,
+    "boolean": bool,
+    "enum": str,
+}
+
+
+def _pascal(raw: str) -> str:
+    return "".join(part.capitalize() for part in re.split(r"[^0-9a-zA-Z]+", str(raw)) if part) or "X"
+
+
+def _build_table_row_model(field_key: str, table_columns: Optional[list]) -> type:
+    """A table-type field's rows become a nested pydantic model derived from
+    table_columns (a JSON array of {key|field_key, type} column defs)."""
+    columns = table_columns or []
+    row_fields: dict[str, Any] = {}
+    for col in columns:
+        col_key = col.get("key") or col.get("field_key")
+        if not col_key:
+            continue
+        py_type = _TYPE_MAP.get(col.get("type", "string"), str)
+        row_fields[col_key] = (Optional[py_type], None)
+    if not row_fields:
+        row_fields["value"] = (Optional[str], None)
+    return create_model(f"{_pascal(field_key)}Row", **row_fields)
+
+
+def build_extraction_model(blueprint_id: str, fields: list) -> type:
+    """Build a pydantic model dynamically from a blueprint's blueprint_fields.
+    Every field is Optional — Gemini errors are soft-failed elsewhere, so a
+    strict schema would only turn a partial extraction into a hard failure."""
+    model_fields: dict[str, Any] = {}
+    for f in fields:
+        if f.field_key == "confidence_score":
+            # Reserved for the fixed meta-field below — a user field of the
+            # same name would otherwise silently vanish from the schema.
+            logger.warning(
+                f"Blueprint field_key 'confidence_score' is reserved and will be ignored "
+                f"(blueprint_id={blueprint_id})"
+            )
+            continue
+        if f.field_type == "table":
+            row_model = _build_table_row_model(f.field_key, f.table_columns)
+            model_fields[f.field_key] = (Optional[List[row_model]], None)
+        else:
+            py_type = _TYPE_MAP.get(f.field_type, str)
+            model_fields[f.field_key] = (Optional[py_type], None)
+    # Always appended, never user-defined — confidence_score is a standard
+    # column regardless of what fields a blueprint declares.
+    model_fields["confidence_score"] = (float, 0.0)
+    return create_model(f"Extraction_{_pascal(blueprint_id)}", **model_fields)
+
+
+def build_extraction_prompt(project, blueprint, fields: list) -> str:
+    """Build the extraction prompt from blueprint.extraction_prompt_override
+    if set, otherwise from project.context plus each field's description
+    and example_value."""
+    if blueprint is not None and blueprint.extraction_prompt_override:
+        base = blueprint.extraction_prompt_override.strip() + "\n"
+    else:
+        base = "You are an expert document data extraction system.\n"
+        if project is not None and project.context:
+            base += f"\n=== CONTEXT ===\n{project.context}\n"
+        base += "\n=== FIELDS TO EXTRACT ===\n"
+        for f in fields:
+            line = f"- {f.field_key} ({f.field_type})"
+            if f.description:
+                line += f": {f.description}"
+            if f.example_value:
+                line += f" (example: {f.example_value})"
+            if f.is_required:
+                line += " [REQUIRED]"
+            if f.field_type == "enum" and f.enum_values:
+                line += f" [allowed values: {f.enum_values}]"
+            if f.field_type == "table" and f.table_columns:
+                cols = ", ".join(
+                    c.get("key") or c.get("field_key") for c in f.table_columns if c.get("key") or c.get("field_key")
+                )
+                line += f" [columns: {cols}]"
+            base += line + "\n"
+
+    base += (
+        "\n=== RULES ===\n"
+        "1. Return null for any field you cannot find with confidence — never guess.\n"
+        "2. `confidence_score` must reflect your overall extraction confidence, from 0.0 to 1.0.\n"
+        "3. Unless a field's description says otherwise, dates are DD/MM/YYYY strings and monetary "
+        "values are plain numbers (no currency symbols or thousands separators).\n"
+    )
+    return base
 
 
 def _strip_schema_keys(node):
@@ -40,107 +134,6 @@ def _strip_schema_keys(node):
     return node
 
 
-# Derived once at import time — GeminiExtractionResult's own defaults (0.0,
-# 0.8, [] etc.) stay untouched on the model; only the schema sent to Gemini
-# has them stripped.
-_RESPONSE_JSON_SCHEMA = _strip_schema_keys(GeminiExtractionResult.model_json_schema())
-
-CATEGORY_PROMPT = """
-Categories — pick the ONE most accurate for this document:
-  - Raw Material        → steel, castings, metal rods, sheets, billets, wire rod
-  - Tooling             → carbide inserts, cutting tools, drills, end mills, dies, fixtures
-  - Machine Spare Parts → bearings, belts, seals, filters, motors, gear boxes
-  - Consumables         → cutting oils, coolants, adhesives, chemicals, welding gas
-  - Packaging Material  → kraft paper, corrugation board, boxes, strapping, stretch film
-  - Utilities           → electricity board, water, fuel, LPG, diesel
-  - Logistics           → freight, transport, courier, loading charges, Bharti Rodways
-  - Maintenance         → machine service, AMC, calibration, repair, overhauling
-  - Other               → anything that does not fit the above categories
-"""
-
-EXTRACTION_PROMPT = f"""
-You are an expert at extracting structured data from Indian manufacturing invoices, bills, and delivery challans.
-
-{CATEGORY_PROMPT}
-
-=== BUYER CONTEXT ===
-- The SUPPLIER is the OTHER party — the company that issued the invoice/bill.
-- Use this context to correctly distinguish supplier vs buyer when the document layout is ambiguous.
-
-=== READING STRATEGY — DO THIS BEFORE EXTRACTING ===
-Before extracting any field, read and understand the entire document:
-1. Identify the document type (Tax Invoice / Delivery Challan / Proforma / Receipt / etc.)
-2. Identify all parties: who issued the document (supplier) and who received it (buyer/consignee).
-3. Identify the table structure: what columns are present, what units are used (Nos, Kgs, Mtrs, Ltrs, etc.)
-4. Identify the totals section: where taxable value, GST, and grand total are printed.
-5. Only after understanding the full layout, extract each field.
-
-This prevents misreading rotated text, multi-column layouts, or non-standard formats.
-
-=== MULTI-PAGE DOCUMENTS ===
-This document may have MULTIPLE PAGES. Process ALL pages before responding.
-- Header fields (supplier, buyer, invoice number) are usually on page 1.
-- Line items may span ALL pages — do NOT stop reading at page 1.
-- Totals and GST summary are usually on the LAST page.
-- If the same line item appears continued across pages, merge into one entry — do not duplicate.
-
-=== SUPPLIER NAME EXTRACTION ===
-The supplier is the entity that ISSUED this document (printed at the top/header as "From" or "Sold by" or simply the company letterhead).
-- Read the full legal name as printed — include "Private Limited", "Pvt. Ltd.", "LLP", etc.
-- Do not abbreviate or guess. Copy exactly as it appears.
-- If the name appears both in the header and in a stamp/seal, prefer the printed header text.
-- The buyer will appear in the "Ship To" / "Bill To" / "Consignee" section — that is NOT the supplier.
-
-=== QUANTITY AND WEIGHT FIELDS ===
-Indian manufacturing invoices often print BOTH piece count and weight in the same quantity column, e.g.:
-  "35,000 Nos / 97,600 Kgs"   or   "100,000 Nos / 855,500 Kgs"   or   "22,000 Nos / 1,65,000 Kgs"
-  Sometimes only weight is given: "269.900 Kgs"
-  Sometimes only count is given: "100 Nos"
-
-For each line item:
-- `quantity`: extract the piece count (Nos / Pcs / Units). Use 0.0 if only weight is present.
-- `quantity_unit`: the unit of the piece count ("Nos", "Pcs", "Mtrs", "Ltrs", etc.). Null if no piece count.
-- `weight_kg`: extract the weight in kilograms as a float. Use 0.0 if not present. Convert if needed (1 MT = 1000 Kg).
-- `total_weight_kg` at the document level: sum of all line item weights.
-
-=== TAX TYPE AUTO-DETECTION ===
-- If supplier state == buyer state → CGST + SGST (intra-state)
-- If supplier state != buyer state → IGST (inter-state)
-- Derive from the state fields or from which tax columns are populated in the document.
-
-=== GSTIN EXTRACTION ===
-- A valid Indian GSTIN is exactly 15 characters matching: 2-digit state code + 10-char PAN + 1 entity type char + 1 check char.
-- Read the entire document for GSTINs — they can appear in the header, footer, terms section, or stamp area.
-- supplier_gstin: the GSTIN belonging to the supplier (the issuer of the document).
-- buyer_gstin: the GSTIN belonging to the buyer/consignee.
-- Only populate if you can read the value with high confidence. Do not guess or reconstruct partial values.
-
-=== IMAGE ORIENTATION ===
-The document image may be rotated (90°, 180°, 270°) or slightly skewed.
-- Before reading any field, determine the correct reading orientation by 
-  locating the document title ("Tax Invoice", "Delivery Challan") and 
-  company letterhead — these are always at the TOP of the document.
-- Mentally rotate the image to upright before extracting any field.
-- Do not let rotation cause you to swap supplier/buyer, misread numbers 
-  as different digits, or miss columns in the line items table.
-- Skew or tilt of up to ~15° should not affect extraction — read through it.
-
-=== EXTRACTION RULES ===
-1. All monetary values must be numbers (float), NEVER strings. Use 0.0 if not found.
-2. Dates must be in DD/MM/YYYY format.
-3. Extract ALL line items from ALL pages — never skip rows.
-4. Pick category from the list above based on document content, NOT from filename.
-5. `confidence_score`: your assessment from 0.0 to 1.0 of overall extraction accuracy.
-6. Return null for fields you cannot find — never guess invoice numbers, amounts, or GSTINs.
-7. HSN/SAC codes are 4–8 digit numbers. Do not confuse them with PO numbers or part numbers.
-8. `rate` is the per-unit price (per Nos or per Kg, as printed). Capture the unit context in `quantity_unit`.
-9. Do not produce false positives: if a field is unclear or ambiguous, return null rather than a guess.
-
-"""
-
-STRICT_PROMPT = EXTRACTION_PROMPT + "\nIMPORTANT: Return ONLY the raw JSON object. No markdown. No ```json. No explanation."
-
-
 def _strip_fences(text: str) -> str:
     text = text.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
@@ -149,13 +142,10 @@ def _strip_fences(text: str) -> str:
 
 
 def _parse_json(text: str) -> dict | None:
-    # Try 1: strip markdown fences, parse directly
     try:
         return json.loads(_strip_fences(text))
     except json.JSONDecodeError:
         pass
-
-    # Try 2: locate the outermost { ... } by character search (handles extra preamble/suffix)
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -163,7 +153,6 @@ def _parse_json(text: str) -> dict | None:
             return json.loads(text[start : end + 1])
         except json.JSONDecodeError:
             pass
-
     return None
 
 
@@ -185,10 +174,10 @@ def _is_model_not_found(err_str: str) -> bool:
     )
 
 
-_503_BACKOFFS = [5, 15, 30, 60]  # wait seconds before attempts 2, 3, 4, 5
+_503_BACKOFFS = [5, 15, 30, 60]
 _MAX_503_ATTEMPTS = 5
 
-_429_BACKOFFS = [30, 60, 90, 120]  # wait seconds before rate-limit retries 2, 3, 4, 5
+_429_BACKOFFS = [30, 60, 90, 120]
 _MAX_429_ATTEMPTS = 4
 
 
@@ -205,7 +194,7 @@ def _count_pdf_pages(file_bytes: bytes) -> int:
 
 def split_pdf_pages(file_bytes: bytes) -> list:
     """Return each page of a PDF as an independent single-page PDF (bytes).
-    Callers process each element as a separate invoice."""
+    Callers process each element as a separate document."""
     import fitz  # pymupdf
     pages = []
     with fitz.open(stream=file_bytes, filetype="pdf") as doc:
@@ -275,24 +264,108 @@ def _delete_file(file_name: str):
         pass
 
 
-async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "image/jpeg") -> GeminiExtractionResult:
+_FIELD_GENERATION_SYSTEM_PROMPT = """
+You design field schemas for a document data-extraction system.
+
+Given a description of what to extract and optional project context, return
+a strict JSON array of field definitions. Each element must have exactly
+these keys:
+  - field_key: short snake_case identifier, unique within the array
+  - display_label: human-readable column header
+  - field_type: one of string, number, date, currency, boolean, enum, table
+  - description: one sentence describing what to extract for this field
+  - example_value: a short realistic example value (string), or null
+  - table_columns: REQUIRED when field_type is "table", null otherwise — a
+    JSON array of {"key": "<snake_case column key>", "type": "<one of
+    string, number, date, currency, boolean>"} describing each column of
+    the repeating row data (e.g. line items). Omitting this for a table
+    field makes it unusable, so never return "table" without it.
+
+Only use field_type "table" for genuinely repeating line-item data.
+Return ONLY the raw JSON array. No markdown, no ```json fences, no explanation.
+"""
+
+
+async def generate_fields(prompt: str, project_context: Optional[str] = None) -> list[dict]:
+    """Text-only Gemini call that proposes a field list for a blueprint,
+    given a free-text prompt plus optional project context. Returns a list
+    of field-definition dicts for client-side review — never persisted here."""
+    full_prompt = _FIELD_GENERATION_SYSTEM_PROMPT
+    if project_context:
+        full_prompt += f"\n=== PROJECT CONTEXT ===\n{project_context}\n"
+    full_prompt += f"\n=== REQUEST ===\n{prompt}\n"
+
+    response = await asyncio.to_thread(
+        client.models.generate_content,
+        model=settings.GEMINI_MODEL,
+        contents=[full_prompt],
+        config=types.GenerateContentConfig(
+            max_output_tokens=4096,
+            temperature=0.2,
+            response_mime_type="application/json",
+            http_options=types.HttpOptions(timeout=_http_timeout_ms()),
+        ),
+    )
+
+    raw_text = response.text
+    parsed = None
+    try:
+        parsed = json.loads(_strip_fences(raw_text))
+    except json.JSONDecodeError:
+        start = raw_text.find("[")
+        end = raw_text.rfind("]")
+        if start != -1 and end != -1 and end > start:
+            try:
+                parsed = json.loads(raw_text[start : end + 1])
+            except json.JSONDecodeError:
+                pass
+
+    if not isinstance(parsed, list):
+        raise RuntimeError(f"generate_fields: model did not return a JSON array — got: {raw_text[:200]!r}")
+
+    # Same reserved-word guard as build_extraction_model — confidence_score
+    # is always the fixed meta-field, never a user/model-suggested one.
+    filtered = []
+    for f in parsed:
+        if isinstance(f, dict) and f.get("field_key") == "confidence_score":
+            logger.warning("generate_fields: dropped model-suggested 'confidence_score' field (reserved)")
+            continue
+        filtered.append(f)
+
+    return filtered
+
+
+async def extract_with_blueprint(
+    file_bytes: bytes,
+    filename: str,
+    mime_type: str,
+    model_cls: type,
+    prompt_text: str,
+) -> Optional[dict]:
+    """
+    Run one page/file through Gemini against a blueprint-derived pydantic
+    model and prompt. Returns the extracted data as a dict (including
+    confidence_score), or None if extraction could not be completed —
+    the caller records that as a soft failure, never an HTTP error.
+    """
     is_pdf = mime_type == "application/pdf"
 
-    # Log page count and size upfront so we can confirm all pages are present
     if is_pdf:
         try:
-            page_count = await asyncio.to_thread(_count_pdf_pages, image_bytes)
-            logger.info(f"[{filename}] PDF — {page_count} page(s), {len(image_bytes) / 1024:.1f} KB")
+            page_count = await asyncio.to_thread(_count_pdf_pages, file_bytes)
+            logger.info(f"[{filename}] PDF — {page_count} page(s), {len(file_bytes) / 1024:.1f} KB")
         except Exception as e:
             logger.warning(f"[{filename}] Could not count PDF pages: {e}")
 
-    # Check and reserve quota BEFORE calling Gemini — blocks if RPM hit
     try:
         usage = await quota_manager.check_and_reserve(settings.GEMINI_MODEL)
         logger.info(f"Quota OK — daily: {usage['daily']}, minute: {usage['minute']}")
     except DailyQuotaExceededError as e:
         logger.error(f"Skipping {filename}: {e}")
         return None
+
+    response_json_schema = _strip_schema_keys(model_cls.model_json_schema())
+    strict_suffix = "\nIMPORTANT: Return ONLY the raw JSON object. No markdown. No ```json. No explanation."
 
     attempt = 0
     consecutive_503 = 0
@@ -302,35 +375,31 @@ async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "imag
         uploaded_file = None
         total_attempt = attempt + consecutive_503 + consecutive_429
         try:
-            prompt_text = f"Filename (context only, do not use to guess fields): {filename}\n\n"
-            prompt_text += EXTRACTION_PROMPT if total_attempt == 0 else STRICT_PROMPT
+            prompt = f"Filename (context only, do not use to guess fields): {filename}\n\n" + prompt_text
+            if total_attempt > 0:
+                prompt += strict_suffix
 
             if is_pdf:
                 try:
-                    uploaded_file = await asyncio.to_thread(_upload_file, image_bytes, filename, mime_type)
-                    contents = [uploaded_file, prompt_text]
+                    uploaded_file = await asyncio.to_thread(_upload_file, file_bytes, filename, mime_type)
+                    contents = [uploaded_file, prompt]
                     input_mode = "native_pdf"
                 except Exception as upload_err:
-                    # Fallback: render every page as a JPEG and send as individual image parts.
-                    # This guarantees all pages reach the model even if the Files API is unavailable.
                     logger.warning(f"[{filename}] Files API failed ({upload_err}); using page-image fallback")
-                    page_images = await asyncio.to_thread(_pdf_to_page_images, image_bytes)
+                    page_images = await asyncio.to_thread(_pdf_to_page_images, file_bytes)
                     logger.info(f"[{filename}] Fallback: sending {len(page_images)} page image(s)")
                     contents = [
                         *[types.Part.from_bytes(data=img, mime_type="image/jpeg") for img in page_images],
-                        prompt_text,
+                        prompt,
                     ]
                     input_mode = "image_fallback"
             else:
-                contents = [
-                    types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                    prompt_text,
-                ]
+                contents = [types.Part.from_bytes(data=file_bytes, mime_type=mime_type), prompt]
                 input_mode = "image_direct"
 
             logger.info(
                 f"[{filename}] Attempt {attempt + 1}/{settings.MAX_RETRIES} | mode={input_mode} | "
-                f"parts={len(contents)} | prompt={len(prompt_text)} chars"
+                f"parts={len(contents)} | prompt={len(prompt)} chars"
             )
 
             response = await asyncio.to_thread(
@@ -341,15 +410,13 @@ async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "imag
                     max_output_tokens=16384,
                     temperature=0.1,
                     response_mime_type="application/json",
-                    response_json_schema=_RESPONSE_JSON_SCHEMA,
+                    response_json_schema=response_json_schema,
                     http_options=types.HttpOptions(timeout=_http_timeout_ms()),
                 ),
             )
 
             raw_text = response.text
-            finish_reason = (
-                response.candidates[0].finish_reason if response.candidates else "UNKNOWN"
-            )
+            finish_reason = response.candidates[0].finish_reason if response.candidates else "UNKNOWN"
             logger.info(
                 f"[{filename}] Response {len(raw_text)} chars, finish_reason={finish_reason} — preview: "
                 f"{raw_text[:200].replace(chr(10), ' ')!r}"
@@ -362,28 +429,19 @@ async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "imag
 
             if isinstance(response.parsed, dict):
                 try:
-                    result = GeminiExtractionResult(**response.parsed)
-                    logger.info(
-                        f"[{filename}] Extraction OK (structured) — {len(result.line_items)} line item(s), "
-                        f"confidence={result.confidence_score}"
-                    )
-                    return result
+                    result = model_cls(**response.parsed)
+                    logger.info(f"[{filename}] Extraction OK (structured) — confidence={result.confidence_score}")
+                    return result.model_dump()
                 except pydantic.ValidationError as ve:
-                    logger.warning(
-                        f"[{filename}] structured parse produced a schema mismatch ({ve}); "
-                        f"fell back to text parse"
-                    )
+                    logger.warning(f"[{filename}] structured parse produced a schema mismatch ({ve}); fell back to text parse")
             else:
                 logger.warning(f"[{filename}] structured parse missed, fell back to text parse")
 
             parsed = _parse_json(raw_text)
             if parsed is not None:
-                result = GeminiExtractionResult(**parsed)
-                logger.info(
-                    f"[{filename}] Extraction OK (fallback) — {len(result.line_items)} line item(s), "
-                    f"confidence={result.confidence_score}"
-                )
-                return result
+                result = model_cls(**parsed)
+                logger.info(f"[{filename}] Extraction OK (fallback) — confidence={result.confidence_score}")
+                return result.model_dump()
 
             logger.warning(
                 f"[{filename}] Attempt {attempt + 1}: JSON parse failed "
@@ -398,16 +456,12 @@ async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "imag
             err_str = str(e)
 
             if _is_model_not_found(err_str):
-                # Permanent config error — every page in this job will fail identically.
-                # Logged at WARNING here (per-page); the caller logs one ERROR per job.
                 logger.warning(f"[{filename}] Model not found ({settings.GEMINI_MODEL}): {err_str}")
                 raise RuntimeError(
                     f"Model unavailable: {settings.GEMINI_MODEL} — check GEMINI_MODEL env var"
                 ) from e
 
             if isinstance(e, httpx.TimeoutException):
-                # Retryable against MAX_RETRIES, like the generic-exception path below —
-                # deliberately NOT counted against consecutive_503 or the rate-limit path.
                 attempt += 1
                 logger.warning(
                     f"[{filename}] Request timed out after {settings.GEMINI_TIMEOUT_SECONDS}s "
@@ -423,32 +477,20 @@ async def extract_bill(image_bytes: bytes, filename: str, mime_type: str = "imag
             if _is_service_unavailable(err_str):
                 consecutive_503 += 1
                 if consecutive_503 >= _MAX_503_ATTEMPTS:
-                    logger.error(
-                        f"[{filename}] Failed after {_MAX_503_ATTEMPTS} attempts — "
-                        f"Gemini demand spike, mark for retry"
-                    )
+                    logger.error(f"[{filename}] Failed after {_MAX_503_ATTEMPTS} attempts — Gemini demand spike, mark for retry")
                     break
                 wait = _503_BACKOFFS[consecutive_503 - 1]
-                logger.warning(
-                    f"[{filename}] 503 received, retrying in {wait}s "
-                    f"(attempt {consecutive_503 + 1}/{_MAX_503_ATTEMPTS})"
-                )
+                logger.warning(f"[{filename}] 503 received, retrying in {wait}s (attempt {consecutive_503 + 1}/{_MAX_503_ATTEMPTS})")
                 await asyncio.sleep(wait)
             elif _is_rate_limit(err_str):
                 consecutive_429 += 1
                 if consecutive_429 >= _MAX_429_ATTEMPTS:
-                    logger.error(
-                        f"[{filename}] Failed after {_MAX_429_ATTEMPTS} rate-limit (429) waits — giving up"
-                    )
+                    logger.error(f"[{filename}] Failed after {_MAX_429_ATTEMPTS} rate-limit (429) waits — giving up")
                     raise RuntimeError(
-                        f"Rate limit exceeded — Gemini API returned 429 after "
-                        f"{_MAX_429_ATTEMPTS} backoff waits"
+                        f"Rate limit exceeded — Gemini API returned 429 after {_MAX_429_ATTEMPTS} backoff waits"
                     ) from e
                 wait = _429_BACKOFFS[consecutive_429 - 1]
-                logger.warning(
-                    f"[{filename}] Rate limit (429) received, retrying in {wait}s "
-                    f"(attempt {consecutive_429 + 1}/{_MAX_429_ATTEMPTS})"
-                )
+                logger.warning(f"[{filename}] Rate limit (429) received, retrying in {wait}s (attempt {consecutive_429 + 1}/{_MAX_429_ATTEMPTS})")
                 await asyncio.sleep(wait)
             else:
                 attempt += 1

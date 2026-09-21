@@ -8,7 +8,7 @@ import { apiFetch, fmtDate } from '../utils/formatters';
 
 export default function Dashboard({ navigate, toast }) {
   const [jobs, setJobs] = useState([]);
-  const [stats, setStats] = useState({ total_jobs: 0, total_files: 0, total_verified: 0, total_flagged: 0, total_errors: 0 });
+  const [stats, setStats] = useState({ total_jobs: 0, total_files: 0 });
   const [loading, setLoading] = useState(true);
   const [deleteModal, setDeleteModal] = useState(null);
   const [deleting, setDeleting] = useState(false);
@@ -29,14 +29,7 @@ export default function Dashboard({ navigate, toast }) {
       const res = await apiFetch(`/job/${deleteModal.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Delete failed');
       setJobs(prev => prev.filter(j => j.id !== deleteModal.id));
-      setStats(prev => ({
-        ...prev,
-        total_jobs: prev.total_jobs - 1,
-        total_files: prev.total_files - (deleteModal.total_files || 0),
-        total_verified: prev.total_verified - (deleteModal.verified_count || 0),
-        total_flagged: prev.total_flagged - (deleteModal.flagged_count || 0),
-        total_errors: prev.total_errors - (deleteModal.error_count || 0),
-      }));
+      setStats(prev => ({ ...prev, total_jobs: prev.total_jobs - 1, total_files: prev.total_files - (deleteModal.total_files || 0) }));
       setDeleteModal(null);
       toast('Job deleted');
     } catch (e) {
@@ -46,13 +39,11 @@ export default function Dashboard({ navigate, toast }) {
     }
   };
 
-  const totalFiles = stats.total_files;
-  const totalOk    = stats.total_verified;
-  const totalFlag  = stats.total_flagged;
-  const totalErr   = stats.total_errors;
+  const totalCompleted = jobs.reduce((s, j) => s + (j.completed_pages || 0), 0);
+  const totalFailed = jobs.reduce((s, j) => s + (j.failed_pages || 0), 0);
   const recentJobs = jobs.slice(0, 8);
-  const sparkData  = jobs.slice(0, 13).reverse().map(j => j.total_files || 0);
-  const sparkOk    = jobs.slice(0, 13).reverse().map(j => j.verified_count || 0);
+  const sparkData = jobs.slice(0, 13).reverse().map(j => j.total_files || 0);
+  const sparkOk   = jobs.slice(0, 13).reverse().map(j => j.completed_pages || 0);
 
   return (
     <div className="page">
@@ -69,32 +60,34 @@ export default function Dashboard({ navigate, toast }) {
       <div className="stat-grid">
         <div className="card stat">
           <div className="stat-label"><Ic.doc style={{ width: 14, height: 14 }} />Total Files Uploaded</div>
-          <div className="stat-value">{totalFiles.toLocaleString()}</div>
+          <div className="stat-value">{stats.total_files.toLocaleString()}</div>
           <div className="stat-foot">
             <span className="trend trend-up">{stats.total_jobs} jobs</span>
             <Sparkline data={sparkData.length ? sparkData : [0]} />
           </div>
         </div>
         <div className="card stat">
-          <div className="stat-label"><Ic.check style={{ width: 14, height: 14 }} />Verified Invoices</div>
-          <div className="stat-value">{totalOk.toLocaleString()}</div>
+          <div className="stat-label"><Ic.check style={{ width: 14, height: 14 }} />Pages Extracted</div>
+          <div className="stat-value">{totalCompleted.toLocaleString()}</div>
           <div className="stat-foot">
-            <span className="trend trend-up">{totalOk + totalFlag > 0 ? Math.round(totalOk / (totalOk + totalFlag + totalErr) * 100) : 0}% success</span>
+            <span className="trend trend-up">{totalCompleted + totalFailed > 0 ? Math.round(totalCompleted / (totalCompleted + totalFailed) * 100) : 0}% success</span>
             <Sparkline data={sparkOk.length ? sparkOk : [0]} />
           </div>
         </div>
         <div className="card stat">
-          <div className="stat-label"><Ic.warn style={{ width: 14, height: 14 }} />Flagged for Review</div>
-          <div className="stat-value">{totalFlag.toLocaleString()}</div>
+          <div className="stat-label"><Ic.warn style={{ width: 14, height: 14 }} />Failed Pages</div>
+          <div className="stat-value">{totalFailed.toLocaleString()}</div>
           <div className="stat-foot">
-            <span className="trend trend-flat">needs review</span>
+            <span className="trend trend-flat">{totalFailed > 0 ? 'check jobs' : 'all clear'}</span>
           </div>
         </div>
         <div className="card stat">
-          <div className="stat-label"><Ic.trendUp style={{ width: 14, height: 14 }} />Extraction Errors</div>
-          <div className="stat-value">{totalErr.toLocaleString()}</div>
+          <div className="stat-label"><Ic.extract style={{ width: 14, height: 14 }} />Total Jobs</div>
+          <div className="stat-value">{stats.total_jobs.toLocaleString()}</div>
           <div className="stat-foot">
-            <span className="trend trend-down">{totalErr > 0 ? 'check logs' : 'all clear'}</span>
+            <button className="link-green" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }} onClick={() => navigate('projects')}>
+              Browse projects →
+            </button>
           </div>
         </div>
       </div>
@@ -107,9 +100,6 @@ export default function Dashboard({ navigate, toast }) {
                 <h3 className="card-title">Recent Jobs</h3>
                 <div className="card-sub">Latest {recentJobs.length} of {jobs.length} total</div>
               </div>
-              <button className="btn btn-ghost btn-sm" onClick={() => navigate('extractions')}>
-                View all <Ic.arrow style={{ width: 14, height: 14 }} />
-              </button>
             </div>
             {loading ? (
               <div className="loading"><span className="spinner" style={{ borderColor: 'var(--border)', borderTopColor: 'var(--green)' }}></span> Loading…</div>
@@ -117,22 +107,21 @@ export default function Dashboard({ navigate, toast }) {
               <div className="empty">
                 <div className="empty-icon"><Ic.inbox style={{ width: 22, height: 22 }} /></div>
                 <div style={{ fontWeight: 600, marginBottom: 4 }}>No extractions yet</div>
-                <div style={{ fontSize: 12.5 }}>Upload your first invoice to get started.</div>
+                <div style={{ fontSize: 12.5 }}>Upload your first document to get started.</div>
               </div>
             ) : (
               <table className="tbl">
                 <thead>
-                  <tr><th>Job ID</th><th>Files</th><th>Status</th><th>Verified</th><th>Flagged</th><th>Errors</th><th>Date</th><th style={{ width: 44 }}></th></tr>
+                  <tr><th>Job ID</th><th>Files</th><th>Status</th><th>Completed</th><th>Failed</th><th>Date</th><th style={{ width: 44 }}></th></tr>
                 </thead>
                 <tbody>
                   {recentJobs.map(j => (
-                    <tr key={j.id} onClick={() => navigate('extractions', { jobId: j.id })}>
+                    <tr key={j.id} onClick={() => navigate('results', { jobId: j.id })}>
                       <td><span className="text-mono" style={{ fontSize: 12 }}>{j.id.slice(0, 8)}…</span></td>
                       <td className="text-mono muted" style={{ fontSize: 12.5 }}>{j.total_files}</td>
                       <td><StatusBadge status={j.status} /></td>
-                      <td className="text-mono" style={{ color: 'var(--green)', fontWeight: 700 }}>{j.verified_count}</td>
-                      <td className="text-mono" style={{ color: 'var(--amber)' }}>{j.flagged_count}</td>
-                      <td className="text-mono" style={{ color: j.error_count > 0 ? 'var(--red)' : 'var(--text-3)' }}>{j.error_count || 0}</td>
+                      <td className="text-mono" style={{ color: 'var(--green)', fontWeight: 700 }}>{j.completed_pages || 0}</td>
+                      <td className="text-mono" style={{ color: j.failed_pages > 0 ? 'var(--red)' : 'var(--text-3)' }}>{j.failed_pages || 0}</td>
                       <td className="muted" style={{ fontSize: 12.5 }}>{fmtDate(j.created_at)}</td>
                       <td style={{ padding: '0 10px' }}>
                         <button
@@ -170,8 +159,8 @@ export default function Dashboard({ navigate, toast }) {
               <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }} onClick={() => navigate('upload')}>
                 <Ic.upload style={{ width: 14, height: 14 }} /> Upload new files
               </button>
-              <button className="btn btn-secondary" style={{ width: '100%', justifyContent: 'center' }} onClick={() => navigate('extractions')}>
-                <Ic.extract style={{ width: 14, height: 14 }} /> Browse extractions
+              <button className="btn btn-secondary" style={{ width: '100%', justifyContent: 'center' }} onClick={() => navigate('projects')}>
+                <Ic.extract style={{ width: 14, height: 14 }} /> Browse projects
               </button>
             </div>
           </div>
@@ -180,9 +169,8 @@ export default function Dashboard({ navigate, toast }) {
             <div className="card-head"><h3 className="card-title">Status breakdown</h3></div>
             <div className="card-pad">
               {[
-                { label: 'Verified', val: totalOk, color: 'var(--green)' },
-                { label: 'Flagged', val: totalFlag, color: 'var(--amber)' },
-                { label: 'Errors', val: totalErr, color: 'var(--red)' },
+                { label: 'Completed', val: totalCompleted, color: 'var(--green)' },
+                { label: 'Failed', val: totalFailed, color: 'var(--red)' },
               ].map(row => (
                 <div key={row.label} style={{ marginBottom: 12 }}>
                   <div className="row between mb-1">
@@ -190,7 +178,7 @@ export default function Dashboard({ navigate, toast }) {
                     <span className="text-mono" style={{ fontWeight: 700, color: row.color }}>{row.val}</span>
                   </div>
                   <div className="progress">
-                    <div className="fill" style={{ width: `${totalOk + totalFlag + totalErr > 0 ? (row.val / (totalOk + totalFlag + totalErr)) * 100 : 0}%`, background: row.color }}></div>
+                    <div className="fill" style={{ width: `${totalCompleted + totalFailed > 0 ? (row.val / (totalCompleted + totalFailed)) * 100 : 0}%`, background: row.color }}></div>
                   </div>
                 </div>
               ))}

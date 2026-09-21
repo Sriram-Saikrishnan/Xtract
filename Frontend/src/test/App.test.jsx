@@ -14,8 +14,12 @@ vi.mock('../pages/Upload', () => ({ default: () => <div data-testid="page-upload
 vi.mock('../pages/Processing', () => ({
   default: (props) => <div data-testid="page-processing" data-jobid={props.jobId} />,
 }));
-vi.mock('../pages/Extractions', () => ({ default: () => <div data-testid="page-extractions" /> }));
-vi.mock('../pages/Detail', () => ({ default: () => <div data-testid="page-detail" /> }));
+vi.mock('../pages/ProjectsList', () => ({ default: () => <div data-testid="page-projects" /> }));
+vi.mock('../pages/ProjectForm', () => ({ default: () => <div data-testid="page-project-form" /> }));
+vi.mock('../pages/ProjectDetail', () => ({ default: () => <div data-testid="page-project-detail" /> }));
+vi.mock('../pages/BlueprintBuilder', () => ({ default: () => <div data-testid="page-blueprint-builder" /> }));
+vi.mock('../pages/ResultsList', () => ({ default: () => <div data-testid="page-results" /> }));
+vi.mock('../pages/ResultDetail', () => ({ default: () => <div data-testid="page-result-detail" /> }));
 vi.mock('../pages/Profile', () => ({ default: () => <div data-testid="page-profile" /> }));
 vi.mock('../pages/Login', () => ({ default: () => <div data-testid="page-login" /> }));
 vi.mock('../pages/Signup', () => ({ default: () => <div data-testid="page-signup" /> }));

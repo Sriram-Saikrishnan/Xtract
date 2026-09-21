@@ -53,9 +53,7 @@ async def get_status(job_id: str, current_user: UserORM = Depends(get_current_us
                 status=result.status,
                 total_files=result.total_files,
                 processed_files=completed_pages + failed_pages,
-                verified_count=result.verified_count,
-                flagged_count=result.flagged_count,
-                error_count=result.error_count,
+                failed_files=result.failed_files or 0,
                 total_pages=result.total_pages or 0,
                 completed_pages=completed_pages,
                 failed_pages=failed_pages,
@@ -90,9 +88,8 @@ async def stream_job(job_id: str, token: str = Query(...)):
                 if not job or job.user_id != user.id:
                     raise HTTPException(status_code=404, detail="Job not found")
                 data = json.dumps({
-                    "verified": job.verified_count or 0,
-                    "flagged": job.flagged_count or 0,
-                    "errors": job.error_count or 0,
+                    "processed_files": job.processed_files or 0,
+                    "failed_files": job.failed_files or 0,
                     "failed_pages": job.failed_pages or 0,
                     "total_pages": job.total_pages or 0,
                     "duration_ms": 0,
@@ -111,9 +108,8 @@ async def stream_job(job_id: str, token: str = Query(...)):
     # Job is in-memory but already finished — send completion immediately
     if live.get("status") in ("done", "completed_with_errors", "error"):
         data = json.dumps({
-            "verified": live.get("verified_count", 0),
-            "flagged": live.get("flagged_count", 0),
-            "errors": live.get("error_count", 0),
+            "processed_files": live.get("processed_files", 0),
+            "failed_files": live.get("failed_files", 0),
             "failed_pages": live.get("failed_pages", 0),
             "total_pages": live.get("total_pages", 0),
             "duration_ms": 0,

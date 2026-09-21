@@ -4,10 +4,10 @@ import logging
 import uuid
 from datetime import datetime
 from sqlalchemy import (
-    Column, String, Float, Integer, DateTime,
+    Column, String, Float, Integer, Boolean, DateTime,
     ForeignKey, Text, UniqueConstraint, text
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.exc import OperationalError, DBAPIError
@@ -103,6 +103,63 @@ class UserORM(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     jobs = relationship("JobORM", back_populates="owner", cascade="all, delete-orphan")
+    projects = relationship("ProjectORM", back_populates="owner", cascade="all, delete-orphan")
+
+
+class ProjectORM(Base):
+    __tablename__ = "projects"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    context = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    owner = relationship("UserORM", back_populates="projects")
+    blueprints = relationship("BlueprintORM", back_populates="project", cascade="all, delete-orphan")
+    jobs = relationship("JobORM", back_populates="project")
+
+
+class BlueprintORM(Base):
+    __tablename__ = "blueprints"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    input_type = Column(String(20), nullable=False, default="pdf")  # pdf | image | mixed
+    generation_mode = Column(String(20), nullable=False, default="manual")  # manual | prompt
+    extraction_prompt_override = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project = relationship("ProjectORM", back_populates="blueprints")
+    fields = relationship(
+        "BlueprintFieldORM", back_populates="blueprint",
+        cascade="all, delete-orphan", order_by="BlueprintFieldORM.sort_order",
+    )
+    jobs = relationship("JobORM", back_populates="blueprint")
+
+
+class BlueprintFieldORM(Base):
+    __tablename__ = "blueprint_fields"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    blueprint_id = Column(UUID(as_uuid=True), ForeignKey("blueprints.id", ondelete="CASCADE"), nullable=False, index=True)
+    field_key = Column(String(100), nullable=False)
+    display_label = Column(String(255), nullable=False)
+    field_type = Column(String(20), nullable=False)  # string|number|date|currency|boolean|enum|table
+    description = Column(Text, nullable=True)
+    example_value = Column(Text, nullable=True)
+    is_required = Column(Boolean, default=False, nullable=False)
+    enum_values = Column(Text, nullable=True)
+    table_columns = Column(JSONB, nullable=True)
+    sort_order = Column(Integer, default=0, nullable=False)
+
+    blueprint = relationship("BlueprintORM", back_populates="fields")
 
 
 class JobORM(Base):
@@ -110,12 +167,12 @@ class JobORM(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True)
+    blueprint_id = Column(UUID(as_uuid=True), ForeignKey("blueprints.id", ondelete="SET NULL"), nullable=True, index=True)
     status = Column(String(50), nullable=False, default="queued")
     total_files = Column(Integer, default=0)
     processed_files = Column(Integer, default=0)
-    verified_count = Column(Integer, default=0)
-    flagged_count = Column(Integer, default=0)
-    error_count = Column(Integer, default=0)
+    failed_files = Column(Integer, default=0)
     total_pages = Column(Integer, default=0)
     completed_pages = Column(Integer, default=0)
     failed_pages = Column(Integer, default=0)
@@ -124,79 +181,25 @@ class JobORM(Base):
     excel_path = Column(String(512), nullable=True)
 
     owner = relationship("UserORM", back_populates="jobs")
-    invoices = relationship("InvoiceORM", back_populates="job", cascade="all, delete-orphan")
+    project = relationship("ProjectORM", back_populates="jobs")
+    blueprint = relationship("BlueprintORM", back_populates="jobs")
     pages = relationship("JobPageORM", back_populates="job", cascade="all, delete-orphan")
+    results = relationship("ExtractionResultORM", back_populates="job", cascade="all, delete-orphan")
 
 
-class InvoiceORM(Base):
-    __tablename__ = "invoices"
+class ExtractionResultORM(Base):
+    __tablename__ = "extraction_results"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id"), nullable=False, index=True)
+    job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    blueprint_id = Column(UUID(as_uuid=True), ForeignKey("blueprints.id", ondelete="SET NULL"), nullable=True, index=True)
     source_filename = Column(String(512))
-    category = Column(String(100))
-    invoice_number = Column(String(200))
-    invoice_date = Column(String(20))
-    challan_number = Column(String(200))
-    document_type = Column(String(100))
-    supplier_name = Column(String(500))
-    supplier_gstin = Column(String(20))
-    supplier_state = Column(String(100))
-    supplier_address = Column(Text)
-    supplier_email = Column(String(200))
-    supplier_phone = Column(String(50))
-    supplier_bank = Column(String(200))
-    supplier_account_number = Column(String(100))
-    supplier_ifsc = Column(String(20))
-    buyer_name = Column(String(500))
-    buyer_gstin = Column(String(20))
-    place_of_supply = Column(String(100))
-    destination = Column(String(200))
-    transport_name = Column(String(200))
-    lr_number = Column(String(100))
-    vehicle_number = Column(String(50))
-    eway_bill_number = Column(String(100))
-    irn_number = Column(String(200))
-    assessable_value = Column(Float, default=0.0)
-    tax_type = Column(String(20))
-    igst_percent = Column(Float, default=0.0)
-    igst_amount = Column(Float, default=0.0)
-    cgst_percent = Column(Float, default=0.0)
-    cgst_amount = Column(Float, default=0.0)
-    sgst_percent = Column(Float, default=0.0)
-    sgst_amount = Column(Float, default=0.0)
-    pf_charges = Column(Float, default=0.0)
-    round_off = Column(Float, default=0.0)
-    grand_total = Column(Float, default=0.0)
-    total_weight_kg = Column(Float, default=0.0)
-    total_qty = Column(Float, default=0.0)
+    status = Column(String(50), default="done")
     confidence_score = Column(Float, default=0.0)
-    status = Column(String(50), default="VERIFIED")
-    flags = Column(Text, default="")
+    data = Column(JSONB, nullable=True)
     extracted_at = Column(DateTime, default=datetime.utcnow)
 
-    job = relationship("JobORM", back_populates="invoices")
-    line_items = relationship("LineItemORM", back_populates="invoice", cascade="all, delete-orphan")
-
-
-class LineItemORM(Base):
-    __tablename__ = "line_items"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    invoice_id = Column(UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False, index=True)
-    sr_no = Column(Integer)
-    die_number = Column(String(100))
-    po_number = Column(String(100))
-    description = Column(Text)
-    hsn_sac_code = Column(String(50))
-    grade = Column(String(100))
-    quantity = Column(Float, default=0.0)
-    quantity_unit = Column(String(50), nullable=True)
-    weight_kg = Column(Float, default=0.0)
-    rate = Column(Float, default=0.0)
-    amount = Column(Float, default=0.0)
-
-    invoice = relationship("InvoiceORM", back_populates="line_items")
+    job = relationship("JobORM", back_populates="results")
 
 
 class JobPageORM(Base):
@@ -233,18 +236,72 @@ class GeminiQuotaORM(Base):
     )
 
 
+async def _add_fk_if_missing(conn, constraint_name: str, alter_sql: str) -> None:
+    """Postgres has no 'ADD CONSTRAINT IF NOT EXISTS' — guard via pg_constraint lookup."""
+    exists = await conn.execute(
+        text("SELECT 1 FROM pg_constraint WHERE conname = :name"),
+        {"name": constraint_name},
+    )
+    if exists.scalar() is None:
+        await conn.execute(text(alter_sql))
+
+
 async def init_db(retries: int = 5, backoff: float = 2.0):
-    """Create all tables, then run idempotent column migration for pre-auth deployments."""
+    """Create all tables, then run idempotent column migration for pre-existing deployments."""
     for attempt in range(retries):
         try:
             async with async_engine.begin() as conn:
-                # Creates users table (new) and any other missing tables.
-                # Skips tables that already exist (checkfirst=True by default).
+                # Creates projects/blueprints/blueprint_fields/extraction_results and any
+                # other missing tables. Skips tables that already exist (checkfirst=True).
                 await conn.run_sync(Base.metadata.create_all)
-                # Add user_id to jobs table for deployments that existed before auth was added.
+
+                # jobs table: drop GST-era counters, add the new project/blueprint linkage.
                 await conn.execute(text(
                     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS user_id UUID"
                 ))
+                await conn.execute(text(
+                    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS project_id UUID"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS blueprint_id UUID"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS failed_files INTEGER DEFAULT 0"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE jobs DROP COLUMN IF EXISTS verified_count"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE jobs DROP COLUMN IF EXISTS flagged_count"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE jobs DROP COLUMN IF EXISTS error_count"
+                ))
+
+                await _add_fk_if_missing(
+                    conn, "jobs_project_id_fkey",
+                    "ALTER TABLE jobs ADD CONSTRAINT jobs_project_id_fkey "
+                    "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL",
+                )
+                await _add_fk_if_missing(
+                    conn, "jobs_blueprint_id_fkey",
+                    "ALTER TABLE jobs ADD CONSTRAINT jobs_blueprint_id_fkey "
+                    "FOREIGN KEY (blueprint_id) REFERENCES blueprints(id) ON DELETE SET NULL",
+                )
+
+                # extraction_results.blueprint_id: originally created with no ON DELETE
+                # action (RESTRICT), which blocks deleting a blueprint that has any
+                # extraction history. Drop and recreate with SET NULL to match
+                # jobs.blueprint_id's behavior — historical results are kept, just
+                # orphaned from the deleted blueprint.
+                await conn.execute(text(
+                    "ALTER TABLE extraction_results DROP CONSTRAINT IF EXISTS extraction_results_blueprint_id_fkey"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE extraction_results ADD CONSTRAINT extraction_results_blueprint_id_fkey "
+                    "FOREIGN KEY (blueprint_id) REFERENCES blueprints(id) ON DELETE SET NULL"
+                ))
+
                 await conn.execute(text(
                     "ALTER TABLE users ADD COLUMN IF NOT EXISTS company_name VARCHAR(255)"
                 ))
@@ -254,12 +311,10 @@ async def init_db(retries: int = 5, backoff: float = 2.0):
                 await conn.execute(text(
                     "ALTER TABLE users ADD COLUMN IF NOT EXISTS company_phone VARCHAR(50)"
                 ))
-                await conn.execute(text(
-                    "ALTER TABLE line_items ADD COLUMN IF NOT EXISTS quantity_unit VARCHAR(50)"
-                ))
-                await conn.execute(text(
-                    "ALTER TABLE line_items ADD COLUMN IF NOT EXISTS weight_kg FLOAT DEFAULT 0.0"
-                ))
+
+                # GST-specific tables — no production data, dropped outright (child first).
+                await conn.execute(text("DROP TABLE IF EXISTS line_items CASCADE"))
+                await conn.execute(text("DROP TABLE IF EXISTS invoices CASCADE"))
             return
         except Exception as exc:
             if attempt == retries - 1:

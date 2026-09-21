@@ -74,7 +74,6 @@ async def test_status_reports_completed_with_errors(make_job, patch_db, fake_use
     job_id = await _seed_job_with_pages(
         make_job, patch_db, fake_user.id,
         status="completed_with_errors", total_pages=5, completed_pages=4, failed_pages=1,
-        verified_count=4, flagged_count=0, error_count=1,
     )
 
     response = await get_status(str(job_id), current_user=fake_user)
@@ -104,7 +103,6 @@ async def test_jobs_list_reports_completed_with_errors_and_page_counts(make_job,
     await _seed_job_with_pages(
         make_job, patch_db, fake_user.id,
         status="completed_with_errors", total_pages=5, completed_pages=4, failed_pages=1,
-        verified_count=4, flagged_count=0, error_count=1,
     )
 
     jobs = await list_jobs(current_user=fake_user)

@@ -1,7 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
-import uuid
 
 
 class JobCreateResponse(BaseModel):
@@ -15,9 +14,7 @@ class JobStatusResponse(BaseModel):
     status: str
     total_files: int
     processed_files: int
-    verified_count: int
-    flagged_count: int
-    error_count: int
+    failed_files: int
     total_pages: int = 0
     completed_pages: int = 0
     failed_pages: int = 0

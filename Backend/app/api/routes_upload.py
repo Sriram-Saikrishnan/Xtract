@@ -4,13 +4,13 @@ from pathlib import Path
 from typing import List
 
 import aiofiles
-from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, File, Depends
+from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, File, Form, Depends
 
 from app.config import settings
 from app.core.batch_processor import run_batch_processor
 from app.core.job_store import job_store
 from app.core.auth import get_current_user
-from app.database import AsyncSessionLocal, JobORM, UserORM
+from app.database import AsyncSessionLocal, BlueprintORM, JobORM, ProjectORM, UserORM
 from app.models.job import JobCreateResponse
 
 logger = logging.getLogger(__name__)
@@ -72,6 +72,8 @@ async def _stream_to_disk(file: UploadFile, dest: Path, ext: str) -> int:
 @router.post("/upload", response_model=JobCreateResponse)
 async def upload_files(
     background_tasks: BackgroundTasks,
+    project_id: str = Form(...),
+    blueprint_id: str = Form(...),
     files: List[UploadFile] = File(...),
     current_user: UserORM = Depends(get_current_user),
 ):
@@ -83,6 +85,14 @@ async def upload_files(
             status_code=400,
             detail=f"Too many files: {len(files)}. Maximum {settings.MAX_FILES_PER_UPLOAD} per upload.",
         )
+
+    async with AsyncSessionLocal() as session:
+        project = await session.get(ProjectORM, uuid.UUID(project_id))
+        if not project or project.user_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Project not found")
+        blueprint = await session.get(BlueprintORM, uuid.UUID(blueprint_id))
+        if not blueprint or blueprint.project_id != project.id:
+            raise HTTPException(status_code=404, detail="Blueprint not found")
 
     for f in files:
         _validate_extension(f)
@@ -108,6 +118,8 @@ async def upload_files(
             status="queued",
             total_files=len(files),
             user_id=current_user.id,
+            project_id=project.id,
+            blueprint_id=blueprint.id,
         )
         session.add(job)
         await session.commit()
