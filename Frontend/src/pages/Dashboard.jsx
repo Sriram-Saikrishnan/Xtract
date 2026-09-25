@@ -112,12 +112,15 @@ export default function Dashboard({ navigate, toast }) {
             ) : (
               <table className="tbl">
                 <thead>
-                  <tr><th>Job ID</th><th>Files</th><th>Status</th><th>Completed</th><th>Failed</th><th>Date</th><th style={{ width: 44 }}></th></tr>
+                  <tr><th>Project</th><th>Files</th><th>Status</th><th>Completed</th><th>Failed</th><th>Date</th><th style={{ width: 44 }}></th></tr>
                 </thead>
                 <tbody>
                   {recentJobs.map(j => (
                     <tr key={j.id} onClick={() => navigate('results', { jobId: j.id })}>
-                      <td><span className="text-mono" style={{ fontSize: 12 }}>{j.id.slice(0, 8)}…</span></td>
+                      <td>
+                        <div style={{ fontWeight: 600, fontSize: 13 }}>{j.project_name || <span className="muted">No project</span>}</div>
+                        {j.blueprint_name && <div className="muted" style={{ fontSize: 11.5 }}>{j.blueprint_name}</div>}
+                      </td>
                       <td className="text-mono muted" style={{ fontSize: 12.5 }}>{j.total_files}</td>
                       <td><StatusBadge status={j.status} /></td>
                       <td className="text-mono" style={{ color: 'var(--green)', fontWeight: 700 }}>{j.completed_pages || 0}</td>

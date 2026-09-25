@@ -7,7 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from sqlalchemy import select, update, func
 
 from app.config import settings
-from app.database import AsyncSessionLocal, JobORM, JobPageORM, UserORM, db_retry
+from app.database import AsyncSessionLocal, BlueprintORM, JobORM, JobPageORM, ProjectORM, UserORM, db_retry
 from app.core.auth import get_current_user
 from app.core.batch_processor import run_retry_processor
 from app.core.job_store import job_store
@@ -22,15 +22,19 @@ router = APIRouter(tags=["Jobs"])
 async def list_jobs(current_user: UserORM = Depends(get_current_user)):
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(JobORM)
+            select(JobORM, ProjectORM.name, BlueprintORM.name)
+            .outerjoin(ProjectORM, JobORM.project_id == ProjectORM.id)
+            .outerjoin(BlueprintORM, JobORM.blueprint_id == BlueprintORM.id)
             .where(JobORM.user_id == current_user.id)
             .order_by(JobORM.created_at.desc())
             .limit(50)
         )
-        jobs = result.scalars().all()
         return [
             {
                 "id": str(j.id),
+                "project_id": str(j.project_id) if j.project_id else None,
+                "project_name": project_name,
+                "blueprint_name": blueprint_name,
                 "status": j.status,
                 "total_files": j.total_files,
                 "processed_files": (j.completed_pages or 0) + (j.failed_pages or 0),
@@ -42,7 +46,7 @@ async def list_jobs(current_user: UserORM = Depends(get_current_user)):
                 "completed_at": j.completed_at.isoformat() if j.completed_at else None,
                 "excel_ready": j.excel_path is not None,
             }
-            for j in jobs
+            for j, project_name, blueprint_name in result.all()
         ]
 
 

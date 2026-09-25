@@ -19,7 +19,8 @@ export default function ConfirmDeleteModal({ job, onConfirm, onCancel, loading }
 
         <div style={{ background: 'var(--surface)', border: '0.5px solid var(--border)', borderRadius: 10, padding: '12px 14px', marginBottom: 18 }}>
           {[
-            ['Job ID', <span className="text-mono" style={{ fontSize: 12 }}>{job.id.slice(0, 8)}…</span>],
+            ['Project', job.project_name || '—'],
+            ...(job.blueprint_name ? [['Blueprint', job.blueprint_name]] : []),
             ['Files uploaded', <span className="text-mono">{job.total_files}</span>],
             ['Pages extracted', <span className="text-mono">{extracted}</span>],
             ['Created', fmtDate(job.created_at)],

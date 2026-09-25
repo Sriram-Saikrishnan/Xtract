@@ -69,6 +69,9 @@ export default function ProjectDetail({ navigate, toast, projectId }) {
     <div className="page"><div className="empty"><p>Project not found.</p><button className="btn btn-primary mt-2" onClick={() => navigate('projects')}>Back</button></div></div>
   );
 
+  const activeCount = blueprints.filter(b => b.is_active).length;
+  const sorted = [...blueprints].sort((a, b) => Number(b.is_active) - Number(a.is_active));
+
   return (
     <div className="page">
       <div className="breadcrumb">
@@ -83,45 +86,73 @@ export default function ProjectDetail({ navigate, toast, projectId }) {
         </div>
         <div className="row gap-2">
           <button className="btn btn-secondary" onClick={() => navigate('project-form', { projectId })}>
-            <Ic.edit style={{ width: 14, height: 14 }} /> Edit
+            <Ic.edit style={{ width: 14, height: 14 }} /> Edit project
           </button>
-          <button className="btn btn-primary" onClick={() => setCreating(true)}>
+          <button className="btn btn-primary" onClick={() => setCreating(true)} disabled={creating}>
             <Ic.plus style={{ width: 14, height: 14 }} /> New blueprint
           </button>
         </div>
       </div>
 
+      <div className="section-head">
+        <div>
+          <h2 className="section-head-title">
+            Blueprints
+            <span className="count-pill">{activeCount}</span>
+          </h2>
+          <div className="section-head-sub">Extraction templates that define which fields to pull from your documents.</div>
+        </div>
+      </div>
+
       {creating && (
         <div className="card mb-3">
-          <div className="card-pad row gap-2">
-            <input
-              className="input"
-              placeholder="Blueprint name"
-              value={newName}
-              onChange={e => setNewName(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleCreate()}
-              autoFocus
-            />
-            <button className="btn btn-primary" onClick={handleCreate}>Create</button>
-            <button className="btn btn-ghost" onClick={() => { setCreating(false); setNewName(''); }}>Cancel</button>
+          <div className="card-pad">
+            <div style={{ fontWeight: 600, fontSize: 13.5, marginBottom: 2 }}>New blueprint</div>
+            <div className="muted" style={{ fontSize: 12.5, marginBottom: 10 }}>Name it after the document type, e.g. "Vendor invoices". You'll add fields next.</div>
+            <div className="row gap-2">
+              <input
+                className="input"
+                placeholder="Blueprint name"
+                value={newName}
+                onChange={e => setNewName(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleCreate()}
+                autoFocus
+              />
+              <button className="btn btn-primary" onClick={handleCreate}>Create &amp; add fields</button>
+              <button className="btn btn-ghost" onClick={() => { setCreating(false); setNewName(''); }}>Cancel</button>
+            </div>
           </div>
         </div>
       )}
 
       {blueprints.length === 0 ? (
-        <div className="card">
-          <div className="empty">
-            <div className="empty-icon"><Ic.extract style={{ width: 22, height: 22 }} /></div>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>No blueprints yet</div>
-            <div style={{ fontSize: 12.5 }}>Create one to define what fields to extract.</div>
+        !creating && (
+          <div className="card">
+            <div className="empty">
+              <div className="empty-icon"><Ic.extract style={{ width: 22, height: 22 }} /></div>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>No blueprints yet</div>
+              <div style={{ fontSize: 12.5 }}>A blueprint tells Xtract which fields to extract from a document type.</div>
+              <button className="btn btn-primary mt-2" onClick={() => setCreating(true)}>
+                <Ic.plus style={{ width: 14, height: 14 }} /> Create your first blueprint
+              </button>
+            </div>
           </div>
-        </div>
+        )
       ) : (
         <div className="file-grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
-          {blueprints.map(bp => (
-            <div key={bp.id} className="file-card" onClick={() => navigate('blueprint-builder', { blueprintId: bp.id, projectId })}>
+          {sorted.map(bp => (
+            <div
+              key={bp.id}
+              className="file-card"
+              style={bp.is_active ? undefined : { opacity: 0.65 }}
+              title="Open blueprint"
+              onClick={() => navigate('blueprint-builder', { blueprintId: bp.id, projectId })}
+            >
               <div className="file-card-head">
-                <div className="file-card-name">{bp.name}</div>
+                <div>
+                  <div className="eyebrow"><Ic.extract style={{ width: 11, height: 11 }} /> Blueprint</div>
+                  <div className="file-card-name">{bp.name}</div>
+                </div>
                 <div className="row gap-2">
                   {!bp.is_active && <span className="badge badge-gray">Archived</span>}
                   <span className="badge badge-blue">{bp.input_type}</span>
@@ -134,6 +165,7 @@ export default function ProjectDetail({ navigate, toast, projectId }) {
                   className="icon-btn"
                   style={{ width: 28, height: 28 }}
                   title="Delete blueprint"
+                  aria-label={`Delete blueprint ${bp.name}`}
                   disabled={busyId === bp.id}
                   onClick={e => { e.stopPropagation(); handleDelete(bp); }}
                 >
