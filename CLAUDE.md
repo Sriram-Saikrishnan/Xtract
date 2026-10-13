@@ -32,51 +32,68 @@ npm install
 npm run dev      # dev server on localhost:5173
 npm run build    # build to dist/
 npm run preview  # preview production build locally
+npm test         # vitest (src/test/)
 ```
 
 ## Architecture
 
-Xtract is an AI-powered invoice extraction SaaS. Users upload PDFs, Gemini processes each page, structured invoice data is stored in Supabase, and users download multi-sheet Excel reports.
+Xtract is a generic, blueprint-driven AI document extraction SaaS. Users define a **Project** (domain context) and one or more **Blueprints** (a typed field schema), upload PDFs/images, Gemini extracts each page against the blueprint's schema, results are stored in Supabase, and users download a multi-sheet Excel report. It is not invoice-specific — the schema is data, not code.
+
+### Domain model
+```
+Project (context)  ──<  Blueprint (input_type, generation_mode, extraction_prompt_override, is_active)
+                            ──<  BlueprintField (field_key, display_label, field_type, description,
+                                                 example_value, is_required, enum_values, table_columns, sort_order)
+Job (project_id, blueprint_id) ──< JobPage (per-page status)  ──< ExtractionResult (JSONB data, confidence_score, status)
+```
+`field_type`: `string | number | date | currency | boolean | enum | table` (table → `table_columns` JSON array of `{key, type}`).
+DB tables: `users`, `projects`, `blueprints`, `blueprint_fields`, `jobs`, `job_pages`, `extraction_results`, `gemini_quota`. SQLAlchemy creates them on startup.
 
 ### Request lifecycle
-1. User uploads PDFs via `POST /upload` → job record created, files saved to `/tmp/billscan/uploads/`
-2. Background task (`batch_processor.py`) splits PDFs page-by-page, calls Gemini per page, validates results, writes invoices + line_items to DB, uploads Excel to Supabase Storage
-3. Frontend polls `GET /job/{job_id}` for real-time progress
-4. `GET /download/{job_id}` returns a signed URL or streams the Excel from Supabase Storage
+1. User builds a blueprint (manually, or via `POST /blueprints/{id}/generate-fields` — Gemini proposes fields from a prompt) and can dry-run it with `POST /blueprints/{id}/test` (no DB write, accepts unsaved fields)
+2. `POST /upload` (multipart: files + `project_id` + `blueprint_id`) → job created, files saved to `UPLOAD_DIR`
+3. Background task (`batch_processor.py`) builds the pydantic model + prompt once per job, splits PDFs into single pages, extracts pages concurrently (semaphore), writes one `extraction_results` row per page (success or failure), builds Excel, uploads to Supabase Storage
+4. Frontend streams progress via SSE `GET /stream/{job_id}?token=...` (`GET /status/{job_id}` for polling)
+5. `POST /jobs/{job_id}/retry` re-extracts only failed pages; `POST /extraction-results/{id}/correct` saves human corrections
+6. `GET /download/{job_id}` streams the Excel from Supabase Storage
 
 ### Backend structure (`Backend/app/`)
 | Layer | Path | Responsibility |
 |---|---|---|
-| Config | `config.py` | Pydantic `Settings` — all env vars, no hardcoding |
-| DB | `database.py` | Async SQLAlchemy engine (NullPool for PgBouncer), `init_db()` |
+| Config | `config.py` | Pydantic `Settings` — all env vars, no hardcoding (`GEMINI_MODEL` default `gemini-2.5-flash`) |
+| DB | `database.py` | Async SQLAlchemy engine (NullPool for PgBouncer), ORM models, `init_db()`, `db_retry` |
+| Models | `models/` | Pydantic request models (`blueprint.py`, `job.py`) |
 | Auth | `core/auth.py` | JWT (HS256, 7-day), bcrypt, `get_current_user` FastAPI dep |
-| Routes | `api/` | One file per domain: auth, upload, jobs, download, review, quota |
-| Extraction | `core/gemini_client.py` | Gemini 1.5 Flash, Files API upload + page-image fallback, retry/backoff |
-| Processing | `core/batch_processor.py` | Page splitting, Gemini call per page, validation, Excel gen, Storage upload |
-| Excel | `excel/excel_builder.py` | openpyxl multi-sheet: Summary / Line Items / GST Summary / Flagged |
+| Routes | `api/` | `routes_auth`, `routes_projects`, `routes_blueprints`, `routes_upload`, `routes_status` (status + SSE), `routes_jobs` (list/stats/retry/delete), `routes_results`, `routes_download`, `routes_quota` |
+| AI | `core/gemini_client.py` | `generate_fields()` (prompt → field schema), `build_extraction_model()` (blueprint → dynamic pydantic model), `build_extraction_prompt()`, `extract_with_blueprint()` (structured output via `response_json_schema`, Files API + page-image fallback, retry/backoff) |
+| Processing | `core/batch_processor.py` | Page splitting, concurrent extraction, per-page status, retry-failed-pages, Excel + Storage finalize |
+| Progress | `core/job_store.py` | In-memory job state + SSE event queue |
+| Excel | `excel/excel_builder.py` | openpyxl: `Results` sheet (non-table fields) + one sheet per `table` field |
 | Storage | `core/storage.py` | Supabase Storage (`xtract-excel` private bucket), path = `{user_id}/{job_id}.xlsx` |
-| Validation | `core/gstin_validator.py`, `tax_validator.py`, `duplicate.py` | Domain validators |
-| Quota | `core/quota_manager.py` | Daily + per-minute Gemini rate-limit tracking |
-
-DB tables: `users`, `jobs`, `invoices`, `line_items`, `gemini_quota`. SQLAlchemy creates them on startup.
+| Quota | `core/quota_manager.py` | Atomic per-minute + daily Gemini limits in Postgres (`SELECT ... FOR UPDATE`) |
+| Recovery | `core/startup_recovery.py` | Startup sweep marks crash-interrupted pages/jobs failed so `/retry` can rescue them |
+| Cleanup | `core/file_cleaner.py` | APScheduler job deletes uploads after `AUTO_DELETE_HOURS` |
 
 ### Frontend structure (`Frontend/src/`)
-- **Routing**: `App.jsx` uses a single `useState(page)` + switch — no React Router. Navigate by calling `setPage('dashboard')`.
+- **Routing**: `App.jsx` uses a single `useState(page)` + switch — no React Router. Navigate by calling `setPage('projects')`. Pages: `dashboard`, `projects`, `project-form`, `project-detail`, `blueprint-builder`, `upload`, `processing`, `results`, `result-detail`, `profile`, plus Login/Signup.
 - **Auth**: `context/AuthContext.jsx` — token + user stored in `localStorage`, auto-logout on any 401 via a custom event.
-- **API client**: `utils/formatters.js` — `apiFetch()` wraps `fetch`, injects `Authorization: Bearer`, dispatches `auth:logout` on 401. **API base URL is hardcoded here** (`https://xtract-nftf.onrender.com`).
+- **API client**: `utils/formatters.js` — `apiFetch()` wraps `fetch`, injects `Authorization: Bearer`, dispatches `auth:logout` on 401. `API_BASE` = `VITE_API_URL` env var, falling back to `https://xtract-nftf.onrender.com`.
 - **Styles**: Single global file `src/index.css` with CSS custom properties (`--text-1`, `--red`, etc.). No CSS modules or Tailwind.
-- **Pages**: Dashboard, Upload, Processing, Extractions, Detail, Profile, Login, Signup.
+- **Tests**: Vitest in `src/test/`.
 
 ### Environment & deployment
-- Backend: Render (`render.yaml`) — Python 3.11, reads `.env`
+- Backend: Render (`Backend/render.yaml`) — Python 3.11, reads `.env`
 - Frontend: Vercel (`vercel.json`) — builds `dist/`, no SSR
-- DB + Storage: Supabase (PostgreSQL via asyncpg, private Storage bucket)
+- DB + Storage: Supabase (PostgreSQL via asyncpg, private Storage bucket `xtract-excel`)
 - Initial DB schema: apply `supabase_rls_migration.sql` manually in Supabase console; SQLAlchemy `init_db()` creates application tables on first startup
 
-Required backend env vars (see `.env.example`): `GEMINI_API_KEY`, `DATABASE_URL`, `JWT_SECRET_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `ALLOWED_ORIGINS`.
+Required backend env vars (see `Backend/.env.example`): `GEMINI_API_KEY`, `DATABASE_URL`, `JWT_SECRET_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `ALLOWED_ORIGINS`. Tunables: `GEMINI_MODEL`, `MAX_RETRIES`, `GEMINI_TIMEOUT_SECONDS`, `MAX_CONCURRENT_EXTRACTIONS`, `GEMINI_RPM_CAP`, `GEMINI_DAILY_CAP_ENABLED`, `GEMINI_RPD_CAP`.
 
 ### Key conventions
-- All authenticated endpoints require `Depends(get_current_user)` — never skip this.
-- Gemini errors are soft-failed (extraction returns partial data with low confidence) — do not raise HTTP errors from the Gemini client.
+- All authenticated endpoints require `Depends(get_current_user)` — never skip this. Ownership is checked via project → `user_id` (e.g. `_get_owned_blueprint`).
+- Gemini errors are soft-failed (`extract_with_blueprint` returns `None`) — do not raise HTTP errors from the Gemini client. The only exception is model-not-found / exhausted 429, which raise `RuntimeError` and are recorded as page failures.
+- Every extraction field is `Optional`; `confidence_score` is a reserved, always-appended meta-field — never let a user/AI field use that key.
+- Gemini's `response_json_schema` rejects `default` keys — always pass schemas through `_strip_schema_keys()`.
+- A blueprint with extraction history is archived (`is_active=false`), never hard-deleted.
 - Indian number formatting (`fmt()`, `fmtDate()`) is in `utils/formatters.js` — use it everywhere monetary values are displayed.
-- Adding a new profile field requires: backend schema update (`users` table + `PATCH /auth/profile`), Pydantic model update, and Frontend `AuthContext` + Profile page update.
+- Adding a new profile field requires: backend schema update (`users` table + `PATCH /profile`), Pydantic model update, and Frontend `AuthContext` + Profile page update.
