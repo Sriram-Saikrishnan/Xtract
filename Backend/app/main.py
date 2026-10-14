@@ -16,7 +16,7 @@ from app.core.startup_recovery import recover_interrupted_jobs
 from app.database import init_db, AsyncSessionLocal
 from app.api import (
     routes_upload, routes_status, routes_download, routes_quota, routes_jobs, routes_auth,
-    routes_projects, routes_blueprints, routes_results,
+    routes_projects, routes_blueprints, routes_results, routes_observability,
 )
 
 logging.basicConfig(
@@ -65,6 +65,7 @@ app.include_router(routes_jobs.router)
 app.include_router(routes_projects.router)
 app.include_router(routes_blueprints.router)
 app.include_router(routes_results.router)
+app.include_router(routes_observability.router)
 
 
 @app.get("/", include_in_schema=False)

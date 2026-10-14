@@ -14,6 +14,7 @@ from app.core.gemini_client import (
     build_extraction_model, build_extraction_prompt, extract_with_blueprint,
     generate_fields as gemini_generate_fields, get_mime_type,
 )
+from app.core.observability import set_llm_context
 from app.models.blueprint import (
     BlueprintFieldCreate, BlueprintFieldUpdate, BlueprintUpdate,
     FieldReorderRequest, GenerateFieldsRequest,
@@ -202,6 +203,10 @@ async def generate_fields_route(blueprint_id: str, body: GenerateFieldsRequest, 
         blueprint = await _get_owned_blueprint(session, blueprint_id, current_user.id)
         project = await session.get(ProjectORM, blueprint.project_id)
 
+    set_llm_context(
+        operation="generate_fields", user_id=current_user.id,
+        project_id=blueprint.project_id, blueprint_id=blueprint.id,
+    )
     try:
         fields = await gemini_generate_fields(body.prompt, project.context if project else None)
     except Exception as e:
@@ -258,6 +263,10 @@ async def test_blueprint(
     file_bytes = await file.read()
     mime_type = get_mime_type(file.filename)
 
+    set_llm_context(
+        operation="test", user_id=current_user.id, project_id=blueprint.project_id,
+        blueprint_id=blueprint.id, page_label=file.filename,
+    )
     data = await extract_with_blueprint(file_bytes, file.filename, mime_type, model_cls, prompt_text)
     if data is None:
         raise HTTPException(502, "Extraction failed — see server logs for details")

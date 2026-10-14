@@ -58,7 +58,7 @@ export default function Sidebar({ page, navigate, activeJobId }) {
         {bot.map(it => {
           const I = it.icon;
           return (
-            <button key={it.id} className={`nav-item ${page === it.id ? 'active' : ''}`} onClick={() => navigate(it.id)}>
+            <button key={it.id} className={`nav-item ${page === it.id || (it.id === 'profile' && page === 'observability') ? 'active' : ''}`} onClick={() => navigate(it.id)}>
               <I className="nav-icon" />
               <span>{it.label}</span>
             </button>

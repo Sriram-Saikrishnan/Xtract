@@ -236,6 +236,34 @@ class GeminiQuotaORM(Base):
     )
 
 
+class LLMCallORM(Base):
+    """One row per Gemini API call (every retry attempt included) — the AI
+    observability log. FKs are SET NULL so usage history survives deletes."""
+    __tablename__ = "llm_calls"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True)
+    blueprint_id = Column(UUID(as_uuid=True), ForeignKey("blueprints.id", ondelete="SET NULL"), nullable=True)
+    job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    page_label = Column(String(512), nullable=True)
+    operation = Column(String(30), nullable=False)       # extract | generate_fields | test
+    model = Column(String(100), nullable=False)
+    input_mode = Column(String(30), nullable=True)       # native_pdf | image_fallback | image_direct | text
+    input_tokens = Column(Integer, default=0, nullable=False)
+    output_tokens = Column(Integer, default=0, nullable=False)
+    thinking_tokens = Column(Integer, default=0, nullable=False)
+    cached_tokens = Column(Integer, default=0, nullable=False)
+    total_tokens = Column(Integer, default=0, nullable=False)
+    latency_ms = Column(Integer, default=0, nullable=False)
+    cost_usd = Column(Float, default=0.0, nullable=False)
+    status = Column(String(20), nullable=False)          # success | error (API-level outcome)
+    error_type = Column(String(50), nullable=True)       # rate_limit | unavailable | timeout | model_not_found | other
+    error_message = Column(Text, nullable=True)
+    attempt = Column(Integer, default=1, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 async def _add_fk_if_missing(conn, constraint_name: str, alter_sql: str) -> None:
     """Postgres has no 'ADD CONSTRAINT IF NOT EXISTS' — guard via pg_constraint lookup."""
     exists = await conn.execute(

@@ -14,6 +14,7 @@ from google.genai import types
 from pydantic import create_model
 
 from app.config import settings
+from app.core.observability import record_llm_call
 from app.core.quota_manager import quota_manager, DailyQuotaExceededError
 
 logger = logging.getLogger(__name__)
@@ -220,6 +221,28 @@ def _pdf_to_page_images(file_bytes: bytes) -> list:
     return images
 
 
+async def _generate(contents, config, *, attempt: int = 1, input_mode: Optional[str] = None):
+    """generate_content in a worker thread, timed and logged to llm_calls.
+    Exceptions are logged then re-raised unchanged for the caller's retry logic."""
+    model = settings.GEMINI_MODEL
+    t0 = time.monotonic()
+    try:
+        response = await asyncio.to_thread(
+            client.models.generate_content, model=model, contents=contents, config=config,
+        )
+    except Exception as e:
+        record_llm_call(
+            model=model, latency_ms=(time.monotonic() - t0) * 1000, status="error",
+            error=e, attempt=attempt, input_mode=input_mode,
+        )
+        raise
+    record_llm_call(
+        model=model, latency_ms=(time.monotonic() - t0) * 1000, status="success",
+        response=response, attempt=attempt, input_mode=input_mode,
+    )
+    return response
+
+
 def _upload_file(file_bytes: bytes, filename: str, mime_type: str):
     suffix = Path(filename).suffix or ".pdf"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -295,16 +318,15 @@ async def generate_fields(prompt: str, project_context: Optional[str] = None) ->
         full_prompt += f"\n=== PROJECT CONTEXT ===\n{project_context}\n"
     full_prompt += f"\n=== REQUEST ===\n{prompt}\n"
 
-    response = await asyncio.to_thread(
-        client.models.generate_content,
-        model=settings.GEMINI_MODEL,
-        contents=[full_prompt],
-        config=types.GenerateContentConfig(
+    response = await _generate(
+        [full_prompt],
+        types.GenerateContentConfig(
             max_output_tokens=4096,
             temperature=0.2,
             response_mime_type="application/json",
             http_options=types.HttpOptions(timeout=_http_timeout_ms()),
         ),
+        input_mode="text",
     )
 
     raw_text = response.text
@@ -402,17 +424,17 @@ async def extract_with_blueprint(
                 f"parts={len(contents)} | prompt={len(prompt)} chars"
             )
 
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model=settings.GEMINI_MODEL,
-                contents=contents,
-                config=types.GenerateContentConfig(
+            response = await _generate(
+                contents,
+                types.GenerateContentConfig(
                     max_output_tokens=16384,
                     temperature=0.1,
                     response_mime_type="application/json",
                     response_json_schema=response_json_schema,
                     http_options=types.HttpOptions(timeout=_http_timeout_ms()),
                 ),
+                attempt=total_attempt + 1,
+                input_mode=input_mode,
             )
 
             raw_text = response.text

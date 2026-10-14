@@ -120,6 +120,18 @@ export default function Profile({ navigate, toast }) {
       </div>
 
       <div className="card section mb-3">
+        <div className="row between">
+          <div>
+            <h3 style={{ marginBottom: 4 }}>AI Observability</h3>
+            <div className="muted" style={{ fontSize: 12.5 }}>Model usage, input/output tokens, latency and estimated cost for every Gemini call.</div>
+          </div>
+          <button className="btn btn-secondary btn-sm" onClick={() => navigate('observability')}>
+            <Ic.trendUp style={{ width: 14, height: 14 }} /> View usage
+          </button>
+        </div>
+      </div>
+
+      <div className="card section mb-3">
         <h3>Extraction preferences</h3>
         <div className="form-row">
           <label>Confidence threshold ({prefs.threshold}%)</label>

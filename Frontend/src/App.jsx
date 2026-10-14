@@ -13,6 +13,7 @@ import BlueprintBuilder from './pages/BlueprintBuilder';
 import ResultsList from './pages/ResultsList';
 import ResultDetail from './pages/ResultDetail';
 import Profile from './pages/Profile';
+import Observability from './pages/Observability';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 
@@ -88,6 +89,7 @@ export default function App() {
     case 'results':           Content = <ResultsList {...pageProps} jobId={jobId} />; break;
     case 'result-detail':     Content = <ResultDetail {...pageProps} resultId={resultId} jobId={jobId} />; break;
     case 'profile':           Content = <Profile {...pageProps} />; break;
+    case 'observability':     Content = <Observability {...pageProps} />; break;
     default:                  Content = <Dashboard {...pageProps} />;
   }
 

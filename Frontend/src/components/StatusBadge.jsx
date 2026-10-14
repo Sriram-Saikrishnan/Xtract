@@ -5,10 +5,11 @@ export default function StatusBadge({ status }) {
     failed: 'failed', error: 'failed',
     NEEDS_REVIEW: 'flagged', flagged: 'flagged', FLAGGED: 'flagged',
     DUPLICATE: 'flagged',
+    completed_with_errors: 'partial',
   };
   const norm = map[status] || 'queued';
-  const clsMap = { completed: 'badge-green', processing: 'badge-amber', queued: 'badge-gray', failed: 'badge-red', flagged: 'badge-amber' };
-  const lblMap = { completed: 'Completed', processing: 'Processing', queued: 'Queued', failed: 'Failed', flagged: 'Flagged' };
+  const clsMap = { completed: 'badge-green', processing: 'badge-amber', queued: 'badge-gray', failed: 'badge-red', flagged: 'badge-amber', partial: 'badge-amber' };
+  const lblMap = { completed: 'Completed', processing: 'Processing', queued: 'Queued', failed: 'Failed', flagged: 'Flagged', partial: 'Partial' };
   return (
     <span className={`badge ${clsMap[norm]}`}>
       {norm === 'processing' && <span className="spinner" style={{ width: 9, height: 9, borderWidth: 1.5 }}></span>}

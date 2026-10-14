@@ -26,6 +26,7 @@ from app.core.gemini_client import (
     split_pdf_pages,
 )
 from app.core.job_store import job_store
+from app.core.observability import set_llm_context
 from app.core.storage import upload_excel
 from app.database import (
     AsyncSessionLocal,
@@ -208,6 +209,8 @@ async def _extract_one_page(
     its siblings in asyncio.gather."""
     page_row_index = db_index if db_index is not None else index
     async with sem:
+        # Runs inside its own gather task, so this only tags this page's calls.
+        set_llm_context(page_label=task.label)
         await _set_page_status(job_id, page_row_index, "processing")
         try:
             data = await extract_with_blueprint(task.page_bytes, task.label, task.mime, model_cls, prompt_text)
@@ -298,7 +301,10 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
     async with AsyncSessionLocal() as session:
         job = await session.get(JobORM, uuid.UUID(job_id))
         blueprint_id = str(job.blueprint_id) if job and job.blueprint_id else None
+        project_id = str(job.project_id) if job and job.project_id else None
+        owner_id = str(job.user_id) if job and job.user_id else user_id
 
+    set_llm_context(operation="extract", user_id=owner_id, project_id=project_id, blueprint_id=blueprint_id, job_id=job_id)
     model_cls, prompt_text = await _load_blueprint_context(blueprint_id)
     if model_cls is None:
         logger.error(f"Job {job_id}: no blueprint set — cannot extract")
@@ -370,7 +376,10 @@ async def run_retry_processor(
         job = await session.get(JobORM, uuid.UUID(job_id))
         blueprint_id = str(job.blueprint_id) if job and job.blueprint_id else None
         total_pages_on_job = job.total_pages if job else retry_total
+        project_id = str(job.project_id) if job and job.project_id else None
+        owner_id = str(job.user_id) if job and job.user_id else user_id
 
+    set_llm_context(operation="extract", user_id=owner_id, project_id=project_id, blueprint_id=blueprint_id, job_id=job_id)
     model_cls, prompt_text = await _load_blueprint_context(blueprint_id)
     if model_cls is None:
         logger.error(f"Job {job_id}: no blueprint set — cannot retry")

@@ -7,6 +7,28 @@ export function fmt(n) {
   return Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// USD cost (LLM spend) — Indian digit grouping, more decimals for sub-cent values
+export function fmtUsd(n) {
+  if (n === null || n === undefined) return '—';
+  const v = Number(n);
+  const digits = v !== 0 && Math.abs(v) < 1 ? 4 : 2;
+  return '$' + v.toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+// Compact counts for tokens: 1.2K, 3.4M
+export function fmtCompact(n) {
+  if (n === null || n === undefined) return '—';
+  const v = Number(n);
+  if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(v >= 1e7 ? 0 : 1) + 'M';
+  if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(v >= 1e4 ? 0 : 1) + 'K';
+  return String(Math.round(v));
+}
+
+export function fmtMs(ms) {
+  if (ms === null || ms === undefined) return '—';
+  return ms >= 1000 ? (ms / 1000).toFixed(ms >= 10000 ? 0 : 1) + 's' : Math.round(ms) + 'ms';
+}
+
 export function fmtDate(iso) {
   if (!iso) return '—';
   try {

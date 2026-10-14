@@ -19,6 +19,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base, JobORM, UserORM
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
+
+
+@compiles(JSONB, "sqlite")
+def _jsonb_as_sqlite_json(element, compiler, **kw):
+    """Tests run on in-memory SQLite, which has no JSONB — render it as JSON."""
+    return "JSON"
 
 
 @pytest_asyncio.fixture
