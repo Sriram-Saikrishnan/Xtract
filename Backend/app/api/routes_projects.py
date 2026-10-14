@@ -131,6 +131,7 @@ async def create_blueprint(project_id: str, body: BlueprintCreate, current_user:
             input_type=body.input_type,
             generation_mode=body.generation_mode,
             extraction_prompt_override=body.extraction_prompt_override,
+            thinking=body.thinking,
         )
         session.add(blueprint)
         await session.commit()

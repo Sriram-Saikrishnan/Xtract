@@ -367,3 +367,11 @@ a{text-decoration:none;color:inherit;}
 .pager-btn:disabled{opacity:0.4;cursor:default;}
 .pager-gap{color:var(--text-3);padding:0 4px;}
 @media (max-width:1100px){.obs-stat-grid-6{grid-template-columns:repeat(2,1fr);}}
+.thinking-toggle{display:flex;align-items:flex-start;gap:12px;}
+.thinking-toggle .toggle{border:none;padding:0;margin-top:1px;}
+.thinking-toggle .toggle:disabled{opacity:0.5;cursor:default;}
+.thinking-toggle .toggle:focus-visible{outline:2px solid var(--green);outline-offset:2px;}
+.thinking-toggle .lbl{font-size:13.5px;font-weight:600;}
+.thinking-toggle .lbl .muted{font-weight:500;font-size:12px;margin-left:4px;}
+.thinking-toggle .lbl-sub{color:var(--text-3);font-size:12px;margin-top:2px;}
+.badge-thinking{font-family:var(--mono);font-size:11px;white-space:nowrap;}

@@ -9,6 +9,7 @@ from sqlalchemy import case, func, select
 
 from app.config import settings
 from app.core.auth import get_current_user
+from app.core.thinking import thinking_label
 from app.database import AsyncSessionLocal, BlueprintORM, JobORM, LLMCallORM, ProjectORM, UserORM, db_retry
 
 router = APIRouter(prefix="/observability", tags=["Observability"])
@@ -175,6 +176,13 @@ _JOB_SORTS = {
 }
 
 
+def _job_thinking_label(job) -> str:
+    # Jobs carry no model; a positive budget with thinking off is a model's minimum (e.g. 2.5 Pro).
+    if job.thinking is False and job.thinking_budget and job.thinking_budget > 0:
+        return f"Min ({job.thinking_budget})"
+    return thinking_label(None, job.thinking_budget)
+
+
 async def _job_rows(session, user_id, *, since=None, job_id=None, sort="created_at",
                     order="desc", limit=20, offset=0) -> tuple[int, list[dict]]:
     filters = [LLMCallORM.user_id == user_id, LLMCallORM.job_id.isnot(None)]
@@ -233,6 +241,9 @@ async def _job_rows(session, user_id, *, since=None, job_id=None, sort="created_
             "total_pages": job.total_pages or 0,
             "completed_pages": done,
             "failed_pages": job.failed_pages or 0,
+            "thinking": job.thinking,
+            "thinking_budget": job.thinking_budget,
+            "thinking_label": _job_thinking_label(job),
             "model": r.model if r.model_count <= 1 else f"{r.model} +{r.model_count - 1}",
             "calls": r.calls or 0,
             "errors": int(r.errors or 0),
@@ -331,6 +342,8 @@ async def list_calls(
                 "error_type": c.error_type,
                 "error_message": c.error_message,
                 "attempt": c.attempt,
+                "thinking_budget": c.thinking_budget,
+                "thinking_label": thinking_label(c.model, c.thinking_budget),
             }
             for c, project_name in rows
         ],

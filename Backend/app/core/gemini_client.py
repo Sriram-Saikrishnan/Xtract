@@ -16,6 +16,7 @@ from pydantic import create_model
 from app.config import settings
 from app.core.observability import record_llm_call
 from app.core.quota_manager import quota_manager, DailyQuotaExceededError
+from app.core.thinking import default_thinking_budget, thinking_limits
 
 logger = logging.getLogger(__name__)
 
@@ -221,10 +222,21 @@ def _pdf_to_page_images(file_bytes: bytes) -> list:
     return images
 
 
+def _thinking_config(thinking_budget: Optional[int]) -> Optional[types.ThinkingConfig]:
+    """None when there's no budget, or the current model has no thinking support
+    (guards a job snapshotted under a different GEMINI_MODEL)."""
+    if thinking_budget is None or thinking_limits(settings.GEMINI_MODEL) is None:
+        return None
+    return types.ThinkingConfig(thinking_budget=thinking_budget)
+
+
 async def _generate(contents, config, *, attempt: int = 1, input_mode: Optional[str] = None):
     """generate_content in a worker thread, timed and logged to llm_calls.
     Exceptions are logged then re-raised unchanged for the caller's retry logic."""
     model = settings.GEMINI_MODEL
+    # Log what the model actually used: the budget sent, else the model's default.
+    thinking = getattr(config, "thinking_config", None)
+    thinking_budget = thinking.thinking_budget if thinking is not None else default_thinking_budget(model)
     t0 = time.monotonic()
     try:
         response = await asyncio.to_thread(
@@ -233,12 +245,12 @@ async def _generate(contents, config, *, attempt: int = 1, input_mode: Optional[
     except Exception as e:
         record_llm_call(
             model=model, latency_ms=(time.monotonic() - t0) * 1000, status="error",
-            error=e, attempt=attempt, input_mode=input_mode,
+            error=e, attempt=attempt, input_mode=input_mode, thinking_budget=thinking_budget,
         )
         raise
     record_llm_call(
         model=model, latency_ms=(time.monotonic() - t0) * 1000, status="success",
-        response=response, attempt=attempt, input_mode=input_mode,
+        response=response, attempt=attempt, input_mode=input_mode, thinking_budget=thinking_budget,
     )
     return response
 
@@ -363,12 +375,18 @@ async def extract_with_blueprint(
     mime_type: str,
     model_cls: type,
     prompt_text: str,
+    thinking_budget: Optional[int] = None,
 ) -> Optional[dict]:
     """
     Run one page/file through Gemini against a blueprint-derived pydantic
     model and prompt. Returns the extracted data as a dict (including
     confidence_score), or None if extraction could not be completed —
     the caller records that as a soft failure, never an HTTP error.
+
+    prompt_text is the static, per-blueprint prompt and goes in
+    system_instruction; only the page and its filename go in contents, so
+    every request in a job shares an identical prefix (implicit caching).
+    thinking_budget None = send no thinking_config (model default / no support).
     """
     is_pdf = mime_type == "application/pdf"
 
@@ -397,7 +415,7 @@ async def extract_with_blueprint(
         uploaded_file = None
         total_attempt = attempt + consecutive_503 + consecutive_429
         try:
-            prompt = f"Filename (context only, do not use to guess fields): {filename}\n\n" + prompt_text
+            prompt = f"Filename (context only, do not use to guess fields): {filename}"
             if total_attempt > 0:
                 prompt += strict_suffix
 
@@ -431,6 +449,8 @@ async def extract_with_blueprint(
                     temperature=0.1,
                     response_mime_type="application/json",
                     response_json_schema=response_json_schema,
+                    system_instruction=prompt_text,
+                    thinking_config=_thinking_config(thinking_budget),
                     http_options=types.HttpOptions(timeout=_http_timeout_ms()),
                 ),
                 attempt=total_attempt + 1,

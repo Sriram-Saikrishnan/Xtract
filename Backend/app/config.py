@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 class Settings(BaseSettings):
@@ -67,3 +67,17 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# Thinking support per model family, matched by longest name prefix.
+#   off:     budget sent when a blueprint has thinking OFF (the model's minimum
+#            if it can't fully disable thinking, e.g. 2.5 Pro → 128)
+#   default: the budget the model uses when no thinking_config is sent
+# None (or a model not listed) = no thinking support → no thinking_config, shown as "N/A".
+# "On" is always -1 (dynamic).
+GEMINI_THINKING_LIMITS: Dict[str, Optional[Dict[str, int]]] = {
+    "gemini-2.5-pro": {"off": 128, "default": -1},
+    "gemini-2.5-flash": {"off": 0, "default": -1},
+    "gemini-2.5-flash-lite": {"off": 0, "default": 0},
+    "gemini-2.0-flash": None,
+}

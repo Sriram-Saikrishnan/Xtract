@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Ic } from '../components/icons';
+import ThinkingToggle from '../components/ThinkingToggle';
 import { apiFetch, fmtDate } from '../utils/formatters';
 
 export default function ProjectDetail({ navigate, toast, projectId }) {
@@ -8,6 +9,7 @@ export default function ProjectDetail({ navigate, toast, projectId }) {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
+  const [newThinking, setNewThinking] = useState(false);
   const [busyId, setBusyId] = useState(null);
 
   const load = () => {
@@ -29,11 +31,12 @@ export default function ProjectDetail({ navigate, toast, projectId }) {
     try {
       const res = await apiFetch(`/projects/${projectId}/blueprints`, {
         method: 'POST',
-        body: JSON.stringify({ name: newName.trim() }),
+        body: JSON.stringify({ name: newName.trim(), thinking: newThinking }),
       });
       if (!res.ok) throw new Error('Create failed');
       const bp = await res.json();
       setNewName('');
+      setNewThinking(false);
       setCreating(false);
       navigate('blueprint-builder', { blueprintId: bp.id, projectId });
     } catch (e) {
@@ -119,7 +122,10 @@ export default function ProjectDetail({ navigate, toast, projectId }) {
                 autoFocus
               />
               <button className="btn btn-primary" onClick={handleCreate}>Create &amp; add fields</button>
-              <button className="btn btn-ghost" onClick={() => { setCreating(false); setNewName(''); }}>Cancel</button>
+              <button className="btn btn-ghost" onClick={() => { setCreating(false); setNewName(''); setNewThinking(false); }}>Cancel</button>
+            </div>
+            <div className="mt-3">
+              <ThinkingToggle checked={newThinking} onChange={setNewThinking} />
             </div>
           </div>
         </div>

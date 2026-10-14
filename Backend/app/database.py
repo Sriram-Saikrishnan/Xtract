@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Float, Integer, Boolean, DateTime,
-    ForeignKey, Text, UniqueConstraint, text
+    ForeignKey, Text, UniqueConstraint, inspect, text
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base, relationship
@@ -133,6 +133,8 @@ class BlueprintORM(Base):
     generation_mode = Column(String(20), nullable=False, default="manual")  # manual | prompt
     extraction_prompt_override = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
+    # Gemini thinking on/off — see app/core/thinking.py for the per-model budget mapping.
+    thinking = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -179,6 +181,10 @@ class JobORM(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
     excel_path = Column(String(512), nullable=True)
+    # Snapshot of the blueprint's thinking setting at job start — later blueprint
+    # edits never relabel or change past jobs. thinking_budget NULL = model has no thinking.
+    thinking = Column(Boolean, nullable=True)
+    thinking_budget = Column(Integer, nullable=True)
 
     owner = relationship("UserORM", back_populates="jobs")
     project = relationship("ProjectORM", back_populates="jobs")
@@ -261,6 +267,7 @@ class LLMCallORM(Base):
     error_type = Column(String(50), nullable=True)       # rate_limit | unavailable | timeout | model_not_found | other
     error_message = Column(Text, nullable=True)
     attempt = Column(Integer, default=1, nullable=False)
+    thinking_budget = Column(Integer, nullable=True)   # budget sent (or model default); NULL = N/A
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
@@ -274,6 +281,37 @@ async def _add_fk_if_missing(conn, constraint_name: str, alter_sql: str) -> None
         await conn.execute(text(alter_sql))
 
 
+async def _migrate_thinking(conn) -> None:
+    """One-shot thinking columns for pre-existing deployments. Each backfill runs
+    only in the same startup that adds its column, so it never touches new rows."""
+    from app.core.thinking import default_thinking_budget
+
+    def _columns(sync_conn, table):
+        return {c["name"] for c in inspect(sync_conn).get_columns(table)}
+
+    if "thinking" not in await conn.run_sync(_columns, "blueprints"):
+        # Existing blueprints migrate to OFF, same as the default for new ones.
+        await conn.execute(text("ALTER TABLE blueprints ADD COLUMN thinking BOOLEAN NOT NULL DEFAULT FALSE"))
+
+    job_cols = await conn.run_sync(_columns, "jobs")
+    if "thinking" not in job_cols:
+        await conn.execute(text("ALTER TABLE jobs ADD COLUMN thinking BOOLEAN"))
+        if "thinking_budget" not in job_cols:
+            await conn.execute(text("ALTER TABLE jobs ADD COLUMN thinking_budget INTEGER"))
+        # Jobs before this change sent no thinking_config → the model's dynamic default.
+        await conn.execute(text("UPDATE jobs SET thinking = TRUE, thinking_budget = -1"))
+
+    if "thinking_budget" not in await conn.run_sync(_columns, "llm_calls"):
+        await conn.execute(text("ALTER TABLE llm_calls ADD COLUMN thinking_budget INTEGER"))
+        models = (await conn.execute(text("SELECT DISTINCT model FROM llm_calls"))).scalars().all()
+        for model in models:
+            budget = default_thinking_budget(model)
+            if budget is not None:
+                await conn.execute(
+                    text("UPDATE llm_calls SET thinking_budget = :b WHERE model = :m"), {"b": budget, "m": model}
+                )
+
+
 async def init_db(retries: int = 5, backoff: float = 2.0):
     """Create all tables, then run idempotent column migration for pre-existing deployments."""
     for attempt in range(retries):
@@ -282,6 +320,7 @@ async def init_db(retries: int = 5, backoff: float = 2.0):
                 # Creates projects/blueprints/blueprint_fields/extraction_results and any
                 # other missing tables. Skips tables that already exist (checkfirst=True).
                 await conn.run_sync(Base.metadata.create_all)
+                await _migrate_thinking(conn)
 
                 # jobs table: drop GST-era counters, add the new project/blueprint linkage.
                 await conn.execute(text(

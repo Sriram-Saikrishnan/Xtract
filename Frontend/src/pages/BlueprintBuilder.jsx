@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Ic } from '../components/icons';
+import ThinkingToggle from '../components/ThinkingToggle';
 import { apiFetch } from '../utils/formatters';
 
 const FIELD_TYPES = ['string', 'number', 'date', 'currency', 'boolean', 'enum', 'table'];
@@ -244,6 +245,7 @@ export default function BlueprintBuilder({ navigate, toast, blueprintId, project
         enum_values: f.field_type === 'enum' ? f.enum_values : null,
         table_columns: f.field_type === 'table' ? parseColumns(f._columnsStr) : null,
       }))));
+      fd.append('thinking', blueprint.thinking ? 'true' : 'false');
       const res = await apiFetch(`/blueprints/${blueprintId}/test`, { method: 'POST', body: fd });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -314,6 +316,10 @@ export default function BlueprintBuilder({ navigate, toast, blueprintId, project
               />
             </div>
           </div>
+        </div>
+        <div className="card-pad" style={{ borderTop: '0.5px solid var(--border)' }}>
+          <ThinkingToggle checked={!!blueprint.thinking} disabled={savingMeta}
+            onChange={v => updateMeta({ thinking: v })} />
         </div>
       </div>
 

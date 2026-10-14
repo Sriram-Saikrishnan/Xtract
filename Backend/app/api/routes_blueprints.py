@@ -14,7 +14,9 @@ from app.core.gemini_client import (
     build_extraction_model, build_extraction_prompt, extract_with_blueprint,
     generate_fields as gemini_generate_fields, get_mime_type,
 )
+from app.config import settings
 from app.core.observability import set_llm_context
+from app.core.thinking import resolve_thinking_budget
 from app.models.blueprint import (
     BlueprintFieldCreate, BlueprintFieldUpdate, BlueprintUpdate,
     FieldReorderRequest, GenerateFieldsRequest,
@@ -50,6 +52,7 @@ def _blueprint_dict(b: BlueprintORM, fields: Optional[list] = None) -> dict:
         "generation_mode": b.generation_mode,
         "extraction_prompt_override": b.extraction_prompt_override,
         "is_active": b.is_active,
+        "thinking": bool(b.thinking),
         "created_at": b.created_at.isoformat() if b.created_at else None,
         "updated_at": b.updated_at.isoformat() if b.updated_at else None,
     }
@@ -238,6 +241,7 @@ async def test_blueprint(
     blueprint_id: str,
     file: UploadFile = File(...),
     fields: Optional[str] = Form(None),  # optional JSON array to test unsaved field edits
+    thinking: Optional[bool] = Form(None),  # optional unsaved toggle; defaults to the saved setting
     current_user: UserORM = Depends(get_current_user),
 ):
     """Runs one extraction against the current (possibly unsaved) field
@@ -267,7 +271,11 @@ async def test_blueprint(
         operation="test", user_id=current_user.id, project_id=blueprint.project_id,
         blueprint_id=blueprint.id, page_label=file.filename,
     )
-    data = await extract_with_blueprint(file_bytes, file.filename, mime_type, model_cls, prompt_text)
+    use_thinking = blueprint.thinking if thinking is None else thinking
+    data = await extract_with_blueprint(
+        file_bytes, file.filename, mime_type, model_cls, prompt_text,
+        thinking_budget=resolve_thinking_budget(settings.GEMINI_MODEL, bool(use_thinking)),
+    )
     if data is None:
         raise HTTPException(502, "Extraction failed — see server logs for details")
 

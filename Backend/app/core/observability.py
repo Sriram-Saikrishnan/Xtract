@@ -127,6 +127,7 @@ def record_llm_call(
     error: Optional[BaseException] = None,
     attempt: int = 1,
     input_mode: Optional[str] = None,
+    thinking_budget: Optional[int] = None,
 ) -> None:
     """Schedule a non-blocking llm_calls insert using the current context."""
     try:
@@ -151,6 +152,7 @@ def record_llm_call(
             "error_type": classify_error(error) if error is not None else None,
             "error_message": str(error)[:1000] if error is not None else None,
             "attempt": attempt,
+            "thinking_budget": thinking_budget,
         }
         task = asyncio.get_running_loop().create_task(_write(row))
         _pending.add(task)

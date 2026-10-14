@@ -41,10 +41,10 @@ Xtract is a generic, blueprint-driven AI document extraction SaaS. Users define 
 
 ### Domain model
 ```
-Project (context)  ──<  Blueprint (input_type, generation_mode, extraction_prompt_override, is_active)
+Project (context)  ──<  Blueprint (input_type, generation_mode, extraction_prompt_override, is_active, thinking)
                             ──<  BlueprintField (field_key, display_label, field_type, description,
                                                  example_value, is_required, enum_values, table_columns, sort_order)
-Job (project_id, blueprint_id) ──< JobPage (per-page status)  ──< ExtractionResult (JSONB data, confidence_score, status)
+Job (project_id, blueprint_id, thinking, thinking_budget) ──< JobPage (per-page status)  ──< ExtractionResult (JSONB data, confidence_score, status)
 ```
 `field_type`: `string | number | date | currency | boolean | enum | table` (table → `table_columns` JSON array of `{key, type}`).
 DB tables: `users`, `projects`, `blueprints`, `blueprint_fields`, `jobs`, `job_pages`, `extraction_results`, `gemini_quota`, `llm_calls`. SQLAlchemy creates them on startup.
@@ -94,6 +94,8 @@ Required backend env vars (see `Backend/.env.example`): `GEMINI_API_KEY`, `DATAB
 - All authenticated endpoints require `Depends(get_current_user)` — never skip this. Ownership is checked via project → `user_id` (e.g. `_get_owned_blueprint`).
 - Gemini errors are soft-failed (`extract_with_blueprint` returns `None`) — do not raise HTTP errors from the Gemini client. The only exception is model-not-found / exhausted 429, which raise `RuntimeError` and are recorded as page failures.
 - Every extraction field is `Optional`; `confidence_score` is a reserved, always-appended meta-field — never let a user/AI field use that key.
+- Blueprint `thinking` (default off) maps to `thinking_budget` per model via `GEMINI_THINKING_LIMITS` in `config.py` + `core/thinking.py` (on = -1 dynamic, off = 0 or the model's minimum, unsupported model = no `thinking_config`, "N/A"). It is snapshotted onto the job at upload — processing and retries read the job, never the blueprint.
+- Extraction prompt goes in `system_instruction` (static per job); per-page `contents` hold only the page + filename, keeping a shared prefix for implicit caching.
 - Gemini's `response_json_schema` rejects `default` keys — always pass schemas through `_strip_schema_keys()`.
 - A blueprint with extraction history is archived (`is_active=false`), never hard-deleted.
 - Indian number formatting (`fmt()`, `fmtDate()`) is in `utils/formatters.js` — use it everywhere monetary values are displayed.

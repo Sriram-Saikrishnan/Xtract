@@ -9,6 +9,7 @@ class BlueprintCreate(BaseModel):
     input_type: str = "pdf"          # pdf | image | mixed
     generation_mode: str = "manual"  # manual | prompt
     extraction_prompt_override: str | None = None
+    thinking: bool = False
 
 
 class BlueprintUpdate(BaseModel):
@@ -18,6 +19,7 @@ class BlueprintUpdate(BaseModel):
     generation_mode: str | None = None
     extraction_prompt_override: str | None = None
     is_active: bool | None = None
+    thinking: bool | None = None
 
 
 class BlueprintFieldCreate(BaseModel):

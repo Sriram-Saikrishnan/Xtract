@@ -39,6 +39,12 @@ const fetchJson = (path, what) => apiFetch(path).then(r => {
   return r.json();
 });
 
+// Thinking setting as sent to Gemini; label comes from the backend (model-aware).
+const ThinkingBadge = ({ budget, label }) => {
+  if (budget === null || budget === undefined) return <span className="muted" style={{ fontSize: 12 }}>{label || 'N/A'}</span>;
+  return <span className={`badge badge-thinking ${budget === -1 ? 'badge-blue' : 'badge-gray'}`}>{label}</span>;
+};
+
 const Spinner = () => (
   <div className="loading"><span className="spinner" style={{ borderColor: 'var(--border)', borderTopColor: 'var(--green)' }}></span> Loading…</div>
 );
@@ -77,6 +83,7 @@ function usePaged(buildPath, what, toast, deps, initialSize = 20) {
 const JOB_COLS = [
   { key: 'created_at', label: 'Project / job', sort: 'created_at' },
   { key: 'status', label: 'Status' },
+  { key: 'thinking', label: 'Thinking' },
   { key: 'input', label: 'Input', num: true },
   { key: 'calls', label: 'Calls', num: true, sort: 'calls' },
   { key: 'in', label: 'In', num: true },
@@ -135,6 +142,7 @@ function JobsTable({ days, reloadKey, onOpen, toast }) {
                     </div>
                   </td>
                   <td><StatusBadge status={j.status} /></td>
+                  <td><ThinkingBadge budget={j.thinking_budget} label={j.thinking_label} /></td>
                   <td className="num" title={`${j.total_files} files → ${j.total_pages} pages (${j.completed_pages} done, ${j.failed_pages} failed)`}>
                     {j.total_files} <span className="muted">/ {j.total_pages}p</span>
                   </td>
@@ -192,7 +200,7 @@ function CallsTable({ jobId, reloadKey, toast, title, sub }) {
           <table className="tbl obs-tbl">
             <thead>
               <tr>
-                <th>Time</th><th>Operation</th><th>{jobId ? 'Page' : 'Project / page'}</th><th>Model</th><th>Mode</th>
+                <th>Time</th><th>Operation</th><th>{jobId ? 'Page' : 'Project / page'}</th><th>Model</th><th>Mode</th><th>Thinking</th>
                 <th style={{ textAlign: 'right' }}>In</th><th style={{ textAlign: 'right' }}>Out</th>
                 <th style={{ textAlign: 'right' }}>Think</th><th style={{ textAlign: 'right' }}>Cached</th>
                 <th style={{ textAlign: 'right' }}>Total</th><th style={{ textAlign: 'right' }}>Latency</th>
@@ -213,6 +221,7 @@ function CallsTable({ jobId, reloadKey, toast, title, sub }) {
                   </td>
                   <td className="text-mono muted" style={{ fontSize: 11.5 }}>{c.model}</td>
                   <td className="muted" style={{ fontSize: 11.5 }}>{c.input_mode || '—'}</td>
+                  <td><ThinkingBadge budget={c.thinking_budget} label={c.thinking_label} /></td>
                   <td className="num">{fmtCompact(c.input_tokens)}</td>
                   <td className="num">{fmtCompact(c.output_tokens)}</td>
                   <td className="num">{fmtCompact(c.thinking_tokens)}</td>
@@ -276,7 +285,12 @@ function JobDetail({ jobId, reloadKey, onBack, navigate, toast }) {
           <div className="card stat">
             <div className="stat-label">Status</div>
             <div style={{ marginTop: 4 }}><StatusBadge status={job.status} /></div>
-            <div className="stat-foot"><span className="muted" style={{ fontSize: 11.5 }}>Duration {job.duration_ms != null ? fmtMs(job.duration_ms) : '—'}</span></div>
+            <div className="stat-foot">
+              <span className="muted" style={{ fontSize: 11.5 }}>Duration {job.duration_ms != null ? fmtMs(job.duration_ms) : '—'}</span>
+              <span className="row" style={{ gap: 6, fontSize: 11.5 }}>
+                <span className="muted">Thinking</span><ThinkingBadge budget={job.thinking_budget} label={job.thinking_label} />
+              </span>
+            </div>
           </div>
           <div className="card stat">
             <div className="stat-label">Input</div>
@@ -414,7 +428,7 @@ export default function Observability({ navigate, toast }) {
               </div>
             </div>
             <div className="card stat">
-              <div className="stat-label">Gemini calls</div>
+              <div className="stat-label">AI calls</div>
               <div className="stat-value">{t.calls.toLocaleString('en-IN')}</div>
               <div className="stat-foot">
                 <span className={`trend ${t.errors ? 'trend-down' : 'trend-up'}`}>

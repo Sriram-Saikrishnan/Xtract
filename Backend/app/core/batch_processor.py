@@ -203,6 +203,7 @@ async def _save_result(
 async def _extract_one_page(
     task: PageTask, job_id: str, blueprint_id: Optional[str], model_cls: type, prompt_text: str,
     sem: asyncio.Semaphore, total_pages: int, index: int, db_index: Optional[int] = None,
+    thinking_budget: Optional[int] = None,
 ) -> PageResult:
     """Bounded by the extraction semaphore. Never lets an exception escape —
     failures are captured into the PageResult so one bad page cannot cancel
@@ -213,7 +214,9 @@ async def _extract_one_page(
         set_llm_context(page_label=task.label)
         await _set_page_status(job_id, page_row_index, "processing")
         try:
-            data = await extract_with_blueprint(task.page_bytes, task.label, task.mime, model_cls, prompt_text)
+            data = await extract_with_blueprint(
+                task.page_bytes, task.label, task.mime, model_cls, prompt_text, thinking_budget=thinking_budget,
+            )
             if data is None:
                 logger.warning(f"{task.label}: extraction returned None")
                 await _save_result(job_id, blueprint_id, task, None, status="failed", error="extraction returned None")
@@ -303,6 +306,8 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
         blueprint_id = str(job.blueprint_id) if job and job.blueprint_id else None
         project_id = str(job.project_id) if job and job.project_id else None
         owner_id = str(job.user_id) if job and job.user_id else user_id
+        # Job snapshot from upload time — never re-read from the blueprint.
+        thinking_budget = job.thinking_budget if job else None
 
     set_llm_context(operation="extract", user_id=owner_id, project_id=project_id, blueprint_id=blueprint_id, job_id=job_id)
     model_cls, prompt_text = await _load_blueprint_context(blueprint_id)
@@ -335,7 +340,10 @@ async def run_batch_processor(job_id: str, file_paths: List[Path], filenames: Li
     extraction_sem = asyncio.Semaphore(settings.MAX_CONCURRENT_EXTRACTIONS)
     extraction_results = await asyncio.gather(
         *(
-            _extract_one_page(task, job_id, blueprint_id, model_cls, prompt_text, extraction_sem, total_pages, i)
+            _extract_one_page(
+                task, job_id, blueprint_id, model_cls, prompt_text, extraction_sem, total_pages, i,
+                thinking_budget=thinking_budget,
+            )
             for i, task in enumerate(page_tasks)
         ),
         return_exceptions=True,
@@ -378,6 +386,8 @@ async def run_retry_processor(
         total_pages_on_job = job.total_pages if job else retry_total
         project_id = str(job.project_id) if job and job.project_id else None
         owner_id = str(job.user_id) if job and job.user_id else user_id
+        # Job snapshot from upload time — never re-read from the blueprint.
+        thinking_budget = job.thinking_budget if job else None
 
     set_llm_context(operation="extract", user_id=owner_id, project_id=project_id, blueprint_id=blueprint_id, job_id=job_id)
     model_cls, prompt_text = await _load_blueprint_context(blueprint_id)
@@ -435,7 +445,8 @@ async def run_retry_processor(
     extraction_results = await asyncio.gather(
         *(
             _extract_one_page(
-                task, job_id, blueprint_id, model_cls, prompt_text, extraction_sem, retry_total, retry_idx, db_index=db_idx
+                task, job_id, blueprint_id, model_cls, prompt_text, extraction_sem, retry_total, retry_idx,
+                db_index=db_idx, thinking_budget=thinking_budget,
             )
             for retry_idx, (task, db_idx) in enumerate(page_tasks_with_db_index)
         ),

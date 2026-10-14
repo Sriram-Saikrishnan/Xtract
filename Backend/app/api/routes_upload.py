@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, File,
 from app.config import settings
 from app.core.batch_processor import run_batch_processor
 from app.core.job_store import job_store
+from app.core.thinking import resolve_thinking_budget
 from app.core.auth import get_current_user
 from app.database import AsyncSessionLocal, BlueprintORM, JobORM, ProjectORM, UserORM
 from app.models.job import JobCreateResponse
@@ -120,6 +121,9 @@ async def upload_files(
             user_id=current_user.id,
             project_id=project.id,
             blueprint_id=blueprint.id,
+            # Snapshot — later blueprint edits never change how this job runs or is labelled.
+            thinking=bool(blueprint.thinking),
+            thinking_budget=resolve_thinking_budget(settings.GEMINI_MODEL, bool(blueprint.thinking)),
         )
         session.add(job)
         await session.commit()
