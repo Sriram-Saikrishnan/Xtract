@@ -41,10 +41,9 @@ class Settings(BaseSettings):
     # AI observability — USD per 1M tokens, used to estimate llm_calls.cost_usd.
     # Thinking tokens are billed at the output rate. Override via env as JSON.
     GEMINI_PRICING: Dict[str, Dict[str, float]] = {
-        "gemini-2.5-pro": {"input": 1.25, "output": 10.00, "cached": 0.31},
-        "gemini-2.5-flash": {"input": 0.30, "output": 2.50, "cached": 0.075},
-        "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40, "cached": 0.025},
-        "gemini-2.0-flash": {"input": 0.10, "output": 0.40, "cached": 0.025},
+        "gemini-2.5-pro": {"input": 1.25, "output": 10.00, "cached": 0.125},
+        "gemini-2.5-flash": {"input": 0.30, "output": 2.50, "cached": 0.03},
+        "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40, "cached": 0.01},
     }
 
     # File handling

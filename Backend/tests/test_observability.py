@@ -29,10 +29,10 @@ def _response(prompt=1000, out=200, thoughts=300, cached=0):
 
 
 def test_compute_cost_bills_thinking_as_output_and_cached_at_cached_rate():
-    # gemini-2.5-flash: input 0.30, output 2.50, cached 0.075 per 1M
+    # gemini-2.5-flash: input 0.30, output 2.50, cached 0.03 per 1M
     cost = compute_cost("gemini-2.5-flash", input_tokens=1_000_000, output_tokens=100_000,
                         thinking_tokens=100_000, cached_tokens=400_000)
-    assert cost == pytest.approx(0.6 * 0.30 + 0.4 * 0.075 + 0.2 * 2.50)
+    assert cost == pytest.approx(0.6 * 0.30 + 0.4 * 0.03 + 0.2 * 2.50)
 
 
 def test_compute_cost_matches_versioned_model_by_prefix_and_unknown_is_zero():
